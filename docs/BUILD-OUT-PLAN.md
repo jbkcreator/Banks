@@ -201,6 +201,12 @@ Re-seat every rental workflow on SourcePort + the Praise contacts layer:
 - Opportunity: resume-v14-only drafter; gap-flagging; PropTech Director/VP; never submit, show posting first; follow-up ledger; interview briefs.
 - Schedule: read-only calendar conflicts (personal blocks = real conflicts); occasions; ROI meter @ $48/hr.
 
+**Grilled decisions (Phase D):**
+
+- **D-D1 — Forwarded email → bill/receipt: extraction + property attribution.** Client (Q19/Q20) settled the *shape*: bills via forwarded renewal emails + `#banks` notes, two categories (personal vs property, property rolls up per address); receipts filed per-property in a Drive folder he owns, personal folder for unattributable, **preserve original attachment**. Client did NOT specify the mechanics. Decision:
+  - **Extraction = LLM.** Banks reads the email body/attachment and pulls amount / due-date / cadence / vendor; handles arbitrary formats. Never silently trusted — every extracted bill/receipt is shown as a draft and confirmed at Josh's ✅ before it becomes a tracked record (extraction error caught at the tap, not after). Rules/regex rejected (brittle across unknown senders).
+  - **Attribution = infer-then-confirm (hybrid).** Banks guesses personal-vs-which-property by matching address/property name in the email against the property list from the PadSplit mirror, shows its guess in the draft ("filing under 123 Main — correct?"), Josh confirms/corrects at the ✅. **Unattributable → personal folder** (client's stated default). Same confirm-on-ambiguity discipline as B-D3; keeps property rollups (expense/tax substantiation) accurate rather than silently mis-filed. Attachment bytes preserved verbatim via FilePort regardless of extraction.
+
 ### Phase E — Slack live path (uses test workspace — part of the 80%)
 - ChatPort live adapter against a **test Slack workspace**: post drafts, read reactions for two-step approval (✅ approve → then "sent" mark). Prove the real interaction, not just outbox. Swap to the client's real workspace token later = config change only.
 
