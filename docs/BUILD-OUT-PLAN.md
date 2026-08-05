@@ -133,7 +133,7 @@ Define the six Port ABCs + a `Fakes` package driving all of them from fixtures. 
 - BriefPort + staleness.
 
 **Phase B design decisions (grilled 2026-08-05):**
-- **B-D1 — Morning briefing is failure-mode-first.** Section order for the 60-second scan:
+- **B-D1 — [BUILT + proven live 2026-08-05: `banks/briefing.py` renders Block Kit + posts to `#banks`, +3 tests] Morning briefing is failure-mode-first.** Section order for the 60-second scan:
   1. **Approved-but-unsent queue, with age** (client's #1 named failure mode — leads the scan)
   2. Today's 1–3 pre-ranked actions
   3. Rooms/vacancy status + days-vacant clock (revenue lever #1)
