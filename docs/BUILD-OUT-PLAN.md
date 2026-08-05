@@ -1,0 +1,199 @@
+# Banks — Detailed Build-Out Plan (post client answers)
+
+Owner: build team · Drafted 2026-08-05 · Source of truth for answers: `BANKS-CLIENT-ANSWERS.md` · Constitution: `Banks/banks/constitution.md` (Part 5 v2.1)
+
+## 0. Purpose & the one hard constraint
+
+Build **~80% of Banks' code before any real infrastructure exists** — no live domain, no server, no GitHub remote, no production PadSplit login. The only live external we use during this phase is a **Slack test workspace** (free), so the real chat path is exercised for real, not faked.
+
+This is achievable because Banks' value is in its *logic and safety rails*, not its plumbing. The plumbing (domain, mailbox, server, PadSplit login, calendar share, Drive folder) is thin and swappable **if and only if** the code is built behind clean interfaces from day one. That seam is the spine of this plan.
+
+## 1. What the client answers changed (delta from the pre-answer build)
+
+The B01 core and the BANKS-02/03 logic modules were built *before* answers landed, against generic assumptions. The answers overturn several of those assumptions. Reconciling them is the first real work:
+
+| Area | Pre-answer assumption (built) | Client answer | Action |
+| ---- | ----------------------------- | ------------- | ------ |
+| Rental system of record | generic room/inquiry tables, Banks-owned | **PadSplit is system of record** — inventory, vacancy, screening, rent, reviews, comps all live there | Rework rentals onto a PadSplit **SourcePort**; local DB becomes a cache/mirror, not the truth |
+| Applicant screening | Banks scores inquiries (income/credit formula) | **No independent screening** — PadSplit screens & presents a pool; Josh approves/declines | **Remove** `score_inquiry`; replace with "surface PadSplit-presented applicants for decision" |
+| Inquiry replies | drafted to the tenant | inquiries go to **Praise** (property manager) first | Route drafts to Praise via a contacts layer |
+| Listing platforms | fixed list | PadSplit primary (self-syndicates) + Roomi + others; **extensible** | Platform-format registry, not hardcoded set |
+| Reviews | Google/Zillow | **PadSplit review system**; drop Google entirely; triggers configurable, payment-streak off by default | Rework review triggers; delete Google path |
+| Turnover | whole-unit checklist | **room-level co-living** — property stays occupied, housemates not party; Praise's real checklist | Room-level turnover model; account for sitting housemates |
+| Rent comps | Rentometer/Zillow | **PadSplit comps**, per-room | Comp source = PadSplit SourcePort |
+| Capital | cap rate / cash-on-cash (equity) | **Roth IRA (not SDIRA)**; short-term secured lending (LTV, capital-stack, borrower experience, exit, term); **HELD pending custodian + legal gates** | **Freeze** module; existing equity math is wrong frame AND blocked — park it |
+| Email host | Google Workspace | **Cloudflare Email Routing** (free), forward + send-as | MailPort live adapter targets Cloudflare |
+| Approval | either style | **two-step** (approve → mark sent); surface **approved-but-unsent queue with age** in morning briefing | Extend dashboard + packets |
+| Market brief | weekly | **daily**, degrade gracefully (flag stale if a day missed) | BriefPort with staleness |
+| Bills | single list | **two categories** (personal vs property-level); property ones roll up per property | Add category + property rollup |
+| Opportunity | generic roles | **Director/VP PropTech**; resume v14 sole source; flag gaps, never write around them; never submit, show posting first | Tighten to resume-only + gap-flagging |
+| ROI meter | figures TBD | **$48/hr**; personal calendar blocks = real conflicts, equal weight | Config value; conflict weighting |
+| Short-term rental | not considered | separate STR exists, **out of scope now** but don't preclude later | Property model must not hardcode co-living-only |
+
+## 2. Architecture — Ports & Adapters (the 80/20 seam)
+
+Banks core knows nothing about PadSplit, Slack, Cloudflare, Google, or a calendar. Every external system is a **Port** (a Python `Protocol`/ABC) with two implementations:
+
+- a **Fake adapter** — deterministic, fixture-driven, built now, drives all tests (the 80%)
+- a **Live adapter** — thin, wired when credentials land (the 20%)
+
+```
+                 ┌─────────────────────── Banks core ───────────────────────┐
+                 │ enforcement · packets · scorecard · scheduler · selfheal   │
+                 │ memory · integrity   (all source-agnostic, already built)  │
+                 └───────────────▲───────────────────────────▲───────────────┘
+   domain modules:               │                           │
+   rentals · finance · opportunity · schedule (capital = frozen)
+                 │                                            │
+        ┌────────┴────────┐                          ┌────────┴────────┐
+        │   PORTS (ABCs)   │                          │  every port has  │
+        │ SourcePort       │  PadSplit                │  Fake + Live     │
+        │ MailPort         │  Cloudflare email        │  adapter         │
+        │ ChatPort         │  Slack #banks            │                  │
+        │ CalendarPort     │  read-only ICS           │  80% = core +    │
+        │ FilePort         │  Google Drive receipts   │  domain + fakes  │
+        │ BriefPort        │  daily market brief      │  20% = live      │
+        └──────────────────┘                          └──────────────────┘
+```
+
+**Six ports:**
+
+1. **SourcePort** (PadSplit) — `list_rooms()`, `vacancies()`, `payment_status()`, `presented_applicants()`, `reviews()`, `room_comps()`. Fake reads CSV/JSON fixtures shaped like PadSplit's real dashboard exports; live adapter is a read-only-login scraper/CSV-puller (chosen form pending — see §6, PadSplit access).
+2. **MailPort** (Cloudflare) — `inbound()` (renewals, receipts, forwards), `draft_reply()` (never sends — hands the drafted reply to the ChatPort/outbox). Fake reads `.eml` fixtures.
+3. **ChatPort** (Slack) — `post_draft()`, `read_approvals()` (reactions → two-step approve/mark-sent). **Live adapter built now against a test workspace.** Fake = outbox JSON (already built).
+4. **CalendarPort** — `events(range)` read-only. Fake reads `.ics` fixtures.
+5. **FilePort** (Drive) — `file_receipt(property, attachment)` preserving original. Fake writes to a local dir tree.
+6. **BriefPort** — `latest_brief()` with `is_stale()`. Fake reads seeded briefs with timestamps.
+
+**Why this shape wins the 80/20:** the entire behaviour of Banks — every draft it writes, every safety rule, every scorecard line — is exercised end-to-end against fakes. Going live means writing six thin adapters and flipping config. No domain logic changes when infra arrives.
+
+## 3. Current state of the code (keep / rework / freeze)
+
+Repo `FA/Banks/` — 2 commits, 54 tests passing. Triage:
+
+**KEEP as-is (source-agnostic core — already correct):**
+- `enforcement.py` — drafts-only egress guard, operator verification. ✅
+- `integrity.py` — Immutable Core hash/halt. ✅
+- `packets.py` — Decision Packet + Action Queue (answered≠completed already matches two-step Q6). ✅ (extend, don't rewrite)
+- `selfheal.py` — retry/dead-letter + temporal freshness. ✅
+- `scheduler.py` — cadence skeleton (Eastern). ✅ (adjust: daily brief, morning approved-but-unsent)
+- `store/` — SQLite; room-first already. ✅ (extend schema, §5)
+- `memory/` — constitution + memory files. ✅
+
+**REWORK (built on wrong assumptions):**
+- `rentals.py` — re-seat on SourcePort; delete `score_inquiry`; route to Praise; extensible listing formats; PadSplit reviews; room-level turnover; per-room PadSplit comps.
+- `finance.py` — add bill `category` (personal|property) + per-property rollup; receipts preserve original via FilePort.
+- `scorecard.py` — add approved-but-unsent-with-age to morning dashboard; market-brief staleness line.
+- `opportunity.py` — tighten to resume-v14-only, gap-flagging, PropTech Director/VP framing, never-submit + show-posting-first.
+- `schedule.py` — set $48/hr; weight personal calendar blocks as real conflicts.
+
+**FREEZE (blocked by client):**
+- `capital.py` — HELD. Existing equity math (cap rate/CoC) is the wrong frame *and* the module is gated on custodian confirmation + legal review. Mark deprecated; build nothing new until both gates clear. When unfrozen, rebuild for short-term secured lending (LTV, capital-stack position, borrower experience, exit, term).
+
+## 4. Build phases
+
+### Phase A — Ports & seam (foundation for everything)
+Define the six Port ABCs + a `Fakes` package driving all of them from fixtures. Wire dependency-injection so domain modules take ports as constructor args (no global singletons). This is the enabling move for the whole 80%.
+- Deliverable: `banks/ports/` (interfaces) + `banks/adapters/fake/` + fixture set in `tests/fixtures/`.
+
+### Phase B — Reconcile core to answers
+- Extend `packets.py` for the approved-but-unsent aging surface.
+- `scorecard.py`: morning dashboard = yesterday recap · today's 1–3 · **approved-but-unsent w/ age** · rooms/vacancy · money-due 7-day · schedule+prep · one learning item · scorecard line · market-brief-staleness flag.
+- `scheduler.py`: daily brief ingest slot; morning briefing 7:30 ET.
+- BriefPort + staleness.
+
+### Phase C — Rentals on PadSplit (the biggest rework, BANKS-02)
+Re-seat every rental workflow on SourcePort + the Praise contacts layer:
+- Vacancy: pull from SourcePort, same-day detection, days-vacant clock (revenue lever #1).
+- Listings: extensible platform-format registry (PadSplit primary + Roomi + others from Praise); drafts only.
+- Inquiries: draft replies **to Praise**, pointing to PadSplit application flow.
+- Applicants: surface **PadSplit-presented** pool for Josh's approve/decline — no independent scoring.
+- Rent status: read from SourcePort; late-payer nudge drafts (never touches funds).
+- Maintenance: route to Praise; vendor drafts from Praise's list; track to closure; >7d scorecard line.
+- Reviews: PadSplit review system; triggers (maintenance-resolved, smooth move-in, unprompted thanks); payment-streak configurable + off.
+- Turnover: Praise's room-level checklist; housemates-not-party awareness.
+- Rate optimizer: per-room PadSplit comps → raise/hold memo w/ $ impact.
+
+### Phase D — Finance & schedule (BANKS-03, minus capital)
+- Bills: two-category tagging + per-property rollup; 7-day/1-day nudges; never pays.
+- Subscriptions: keep/kill memos (already built; keep).
+- Receipts: MailPort inbound → FilePort per-property filing, **original attachment preserved**.
+- Opportunity: resume-v14-only drafter; gap-flagging; PropTech Director/VP; never submit, show posting first; follow-up ledger; interview briefs.
+- Schedule: read-only calendar conflicts (personal blocks = real conflicts); occasions; ROI meter @ $48/hr.
+
+### Phase E — Slack live path (uses test workspace — part of the 80%)
+- ChatPort live adapter against a **test Slack workspace**: post drafts, read reactions for two-step approval (✅ approve → then "sent" mark). Prove the real interaction, not just outbox. Swap to the client's real workspace token later = config change only.
+
+### Phase F — Integration, acceptance, hardening
+- End-to-end "day in the life" runs against all fakes: seeded vacancy→Praise draft; seeded late payment→nudge; seeded PadSplit-presented applicant→surfaced; seeded bill→nudge; seeded calendar conflict→flag; seeded resume+posting→application draft with a gap flagged.
+- Re-run and extend the **FA hard-wall harness** (must stay green through all rework — no FA import/env/query path ever creeps in).
+- Target: full suite green; ~80% of total planned code complete.
+
+### Phase G — Infra-dependent 20% (deferred, not this phase)
+Only when creds land: live MailPort (Cloudflare), live SourcePort (PadSplit login), real Slack token swap, calendar share, Drive folder, Hetzner deploy, GitHub push. See §6.
+
+### Phase H — Capital (separately gated, not infra)
+Frozen until custodian + legal gates clear. Then rebuild for short-term secured lending underwriting.
+
+## 5. Data model changes (`store/schema.sql`)
+
+- Add `properties` table (first-class parent) — rooms FK to it; enables per-property rollups and keeps the door open for the out-of-scope STR (a property with a different `kind`).
+- `rooms`: keep room-first; ensure per-room rate (already present); add `padsplit_room_id` for sync mapping.
+- Replace `inquiries.score` usage — applicants now come from PadSplit presented pool; add `applicants` table (padsplit_applicant_id, room_id, status presented|approved|declined).
+- `bills`: add `category` (personal|property) + keep `property_address`/FK for rollup.
+- `reviews`: add table (room_id, trigger, drafted_at) tied to PadSplit review system.
+- `market_brief`: add table (received_at, body) for BriefPort staleness.
+- Keep additive/idempotent (`init_db` pattern; no destructive migrations — matches ADR-0024 scripts-only discipline in the parent project, applied here as fresh-schema evolution since Banks has no prod DB yet).
+
+## 6. The infra-dependent 20% (what actually needs creds)
+
+| Item | Blocked on | Owed by | Our action today |
+| ---- | ---------- | ------- | ---------------- |
+| PadSplit access **form decision** | us | **us — due today** | Answer: **read-only login** now (no public API exists; CSV export is the fallback). Build live adapter as a read-only-login puller; validate against live data when login arrives. |
+| Cloudflare Email Routing feasibility | us | us | Confirm forward + send-as covers inbound read + drafted replies before client spends on paid mail. |
+| Monthly operating cost figure (Q24) | us | **us — owed** | Send conservative estimate (Cloudflare free + Slack free + GitHub free + Hetzner ~$5–10/mo + LLM usage) so ROI is real from first run; true up after 2–3 wks. |
+| Domain + registrar | client | client (today) | Wire mailbox once received → announce "mailbox live" (triggers Q19 bills list + Q23 calendar share). |
+| Slack real token | client | client (today) | Config swap from test workspace. |
+| Praise contacts + listing/vendor/turnover lists | client (via Praise) | client (today) | Populate contacts layer + platform registry + vendor table + turnover checklist. |
+| Google Drive receipts folder | client | client | FilePort live target. |
+| Calendar share | client | client (after mailbox live) | CalendarPort live target. |
+| Hetzner VM + DB + deploy | us | us (Hari-approved) | Provision after code stabilises. |
+| GitHub repo → heu.solution | client | client | `git remote add` + push when created. |
+| Capital module | custodian + legal gates | client | Do not start. |
+
+## 7. Sequencing & dependencies
+
+```
+A (ports+fakes) ──► B (core reconcile) ──► C (rentals) ─┐
+                                     └─► D (finance/sched)├─► F (integration+acceptance)
+E (slack live, test wkspace) ───────────────────────────┘
+G (infra 20%) ── after F, as creds land
+H (capital) ── after client gates clear (independent)
+```
+A is the gate for everything (ports must exist before modules can be re-seated). C and D run in parallel after B. E runs in parallel throughout (only needs the test workspace). Capital stays out.
+
+## 8. Testing strategy
+
+- **Fakes drive everything** — deterministic fixtures per port; no network in the default suite.
+- **Hard-wall harness is the invariant** — runs on every change; no FA import/env/query path may appear (static AST + seeded-probe, already built).
+- **Drafts-only invariant** — every domain action asserts it produces a `Draft`, never an egress; capital's professional-review flag and never-submit for opportunities stay structurally enforced.
+- **Acceptance fixtures** — one per standing job, seeded, proving same-day/same-hour bars.
+- **Slack live smoke** — a thin, opt-in test against the test workspace (marked, not in the default CI run) proving post + reaction-read.
+- Target coverage: all domain logic + all fakes + ports; live adapters get smoke tests only until real creds validate them.
+
+## 9. Risks & watch-items
+
+- **PadSplit has no public API** (confirmed by research) — the live SourcePort is a read-only-login puller/CSV consumer, inherently more fragile than an API and subject to PadSplit's ToS. Mitigate: isolate all fragility in the live adapter; keep the fixture contract stable; CSV-export path as fallback; flag to client that same-day detection via login-pull is best-effort. **Open research item still out for confirmation.**
+- **Client-answer authenticity** — several consequential items (Roth IRA gates, Praise as a real person, 414 commercial terms) are taken from pasted text, unverified from our side. Capital stays frozen regardless; treat Praise/contacts as data to confirm on first real hand-off.
+- **Scope creep from STR (Q18a)** — explicitly out of scope; the only obligation is the `properties`-parent model so adding it later isn't a rewrite.
+- **Two-step approval drift** — the real failure mode the client named is "approved but never sent." The approved-but-unsent-with-age surface is a first-class dashboard requirement, not a nice-to-have.
+
+## 10. Definition of done for "80% before infra"
+
+- Six ports defined; all six fakes built; DI wired.
+- Core reconciled to answers (packets/scorecard/scheduler/brief).
+- Rentals, finance, opportunity, schedule reworked and green against fakes.
+- Slack live path proven on the test workspace.
+- Full acceptance suite + hard-wall harness green.
+- Capital frozen; infra-live adapters stubbed behind ports awaiting creds.
+- Remaining 20% = writing six thin live adapters + provisioning + capital (gated) — no domain logic left to write.
