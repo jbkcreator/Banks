@@ -7,3 +7,4 @@ outbox/*.json
 .pytest_cache/
 *.egg-info/
 outbox/
+.secrets/
