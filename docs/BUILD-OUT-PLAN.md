@@ -220,6 +220,11 @@ Re-seat every rental workflow on SourcePort + the Praise contacts layer:
 ### Phase E — Slack live path (uses test workspace — part of the 80%)
 - ChatPort live adapter against a **test Slack workspace**: post drafts, read reactions for two-step approval (✅ approve → then "sent" mark). Prove the real interaction, not just outbox. Swap to the client's real workspace token later = config change only.
 
+**Grilled decisions (Phase E):**
+
+- **E-D1 — Reaction/message ingestion = polling (pull), behind ChatPort.** Slack Events API needs a public inbound URL (no server until Phase G), so it can't run against the test workspace now. Decision: **poll `conversations.history` + `reactions.get` on the existing scheduler cadence** — outbound token only, runs today. Maps reads to A-D8 draft_ref correlation + 4-reaction vocab (✅📤❌✍️). If real-time ever matters, an Events-API adapter swaps in behind the same port, no domain change.
+- **E-D2 — TEST workspace wired & verified (2026-08-05).** Slack app "Banks" created in workspace **"bank test"** (`T0BNYH0JSSC`), bot user `banks` (`U0BN4F05R0S`). Bot scopes: `chat:write`, `groups:history`, `groups:read`, `reactions:read`. Private channel **`banks_test` = `C0BN4GKHJCS`**, bot is a member. `auth.test` + `conversations.list` (private) verified live. Creds in **git-ignored `.env`** (`BANKS_SLACK_BOT_TOKEN`, `BANKS_CHANNEL_ID`) — read by `config.load_config()`; **never committed**. Real-workspace swap later = change those two values only. App-level `xapp-` token (socket mode) stored but unused by the polling adapter.
+
 ### Phase F — Integration, acceptance, hardening
 - End-to-end "day in the life" runs against all fakes: seeded vacancy→Praise draft; seeded late payment→nudge; seeded PadSplit-presented applicant→surfaced; seeded bill→nudge; seeded calendar conflict→flag; seeded resume+posting→application draft with a gap flagged.
 - Re-run and extend the **FA hard-wall harness** (must stay green through all rework — no FA import/env/query path ever creeps in).
