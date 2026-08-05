@@ -59,7 +59,7 @@ Banks core knows nothing about PadSplit, Slack, Cloudflare, Google, or a calenda
 **Six ports:**
 
 1. **SourcePort** (PadSplit) — `list_rooms()`, `vacancies()`, `payment_status()`, `presented_applicants()`, `reviews()`, `room_comps()`. Fake reads CSV/JSON fixtures shaped like PadSplit's real dashboard exports; live adapter is a read-only-login scraper/CSV-puller (chosen form pending — see §6, PadSplit access).
-2. **MailPort** (Cloudflare) — `inbound()` (renewals, receipts, forwards), `draft_reply()` (never sends — hands the drafted reply to the ChatPort/outbox). Fake reads `.eml` fixtures.
+2. **MailPort** — **two-part** because Cloudflare Email Routing is inbound-only (no send-as; see §6 flag): **inbound = Cloudflare** (`inbound()` reads renewals, receipts, forwards), **outbound = a separate transactional sender** (Resend/Mailgun/SES — this is the credential Relay holds, R-D1). `draft_reply()` never sends — it hands the drafted reply to ChatPort/outbox; only Relay, via the outbound sender, transmits. One MailPort seam, two backing services. Fake reads `.eml` fixtures for inbound and captures sends to the outbox.
 3. **ChatPort** (Slack) — `post_draft()`, `read_approvals()` (reactions → two-step approve/mark-sent). **Live adapter built now against a test workspace.** Fake = outbox JSON (already built).
 4. **CalendarPort** — `events(range)` read-only. Fake reads `.ics` fixtures.
 5. **FilePort** (Drive) — `file_receipt(property, attachment)` preserving original. Fake writes to a local dir tree.
@@ -273,7 +273,7 @@ Frozen until custodian + legal gates clear. Then rebuild for short-term secured 
 | Item | Blocked on | Owed by | Our action today |
 | ---- | ---------- | ------- | ---------------- |
 | PadSplit access **form decision** | us | **us — due today** | Answer: **read-only login** now (no public API exists; CSV export is the fallback). Build live adapter as a read-only-login puller; validate against live data when login arrives. |
-| Cloudflare Email Routing feasibility | us | us | Confirm forward + send-as covers inbound read + drafted replies before client spends on paid mail. |
+| Cloudflare Email Routing feasibility — **RESOLVED, flag to client** | us | **us — flag owed** | **Cloudflare Email Routing is inbound-only (forwarding); it has NO outbound/send-as.** So "send-as configured" (Q2) is impossible with Cloudflare alone. Two-part MailPort required (see below). **Flag to Josh:** keep Cloudflare free for inbound; add a free-tier transactional sender (recommend **Resend**; Mailgun/SES alternatives) for outbound send-as — avoids a paid mailbox. Both need the domain first. |
 | Monthly operating cost figure (Q24) | us | **us — owed** | Send conservative estimate (Cloudflare free + Slack free + GitHub free + Hetzner ~$5–10/mo + LLM usage) so ROI is real from first run; true up after 2–3 wks. |
 | Domain + registrar | client | client (today) | Wire mailbox once received → announce "mailbox live" (triggers Q19 bills list + Q23 calendar share). |
 | Slack real token | client | client (today) | Config swap from test workspace. |
