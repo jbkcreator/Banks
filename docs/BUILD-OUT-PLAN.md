@@ -158,6 +158,31 @@ Define the six Port ABCs + a `Fakes` package driving all of them from fixtures. 
   - **Boundary:** the log records **Banks' own actions**, not PadSplit's world — `vacancy_detected` = when Banks *learned* it, not PadSplit's truth (which stays in the mirror, A-D1).
 
 ### Phase C — Rentals on PadSplit (the biggest rework, BANKS-02)
+
+**Phase C design decisions (grilled 2026-08-05):**
+- **C-D1 — Three-party routing: Banks drafts → Josh approves → Relay delivers to Praise → Praise sends to tenant/vendor.**
+  - **Recipient settled by client** (verbatim): "Banks will often be drafting to Praise rather than to a tenant or vendor directly"; "draft replies for Praise to send, or route to him." So for all **tenant/vendor-facing** rental comms, `Draft.to = Praise`; the draft *body* is the message Praise relays. Banks and Josh never contact tenants directly — Praise is the executor.
+  - **Two destination classes:** *Josh-facing* (morning briefing, rate memos, finance items, all approvals) go to Josh; *Praise-facing* (inquiry replies, vendor outreach, turnover coordination) end at Praise.
+  - **Approval gate = Josh-always (C-D1a).** Every outbound — including routine Praise-facing drafts — goes to `#banks` for Josh's ✅ before Relay delivers to Praise. Faithful to the immutable core ("everything through Josh's tap"; only Josh may widen it by amendment). We do **not** quietly grant Banks a Praise-direct path.
+  - **FLAG TO JOSH (autonomy question):** routine tenant inquiry replies may be high-volume; ask whether he wants to authorize a **Praise-direct fast-path for routine cases** (a conscious standing-order widening he approves), keeping only unusual/high-stakes items on his gate. Until he says so, Josh-always holds.
+  - **BLOCKED:** the *channel* to reach Praise (email vs shared Slack) is pending Praise's contact details (client "connecting you and Praise today"). The contacts layer is built now against a fake Praise; live channel wired when details arrive.
+
+- **C-D2 — Applicants: surface + draft downstream; and the READ-ONLY-PADSPLIT invariant (locked).**
+  - Banks **surfaces** each PadSplit-presented applicant in `#banks` (name + PadSplit's own screening summary, verbatim — no independent scoring, per Q13), Josh decides, and **Josh/Praise click approve/decline inside PadSplit**. The decision is always a human, in-platform action ("every approval remains mine").
+  - Banks then **drafts the downstream communication** (decline note or welcome/next-step) *for Praise to send*, routed through C-D1 (Josh ✅ → Relay → Praise). The decision stays human; only the resulting message is drafted.
+  - **INVARIANT (locked): SourcePort is READ-ONLY. Banks never automates any write to PadSplit — ever.** All PadSplit state changes (applicant approve/decline, listing edits, rent, reviews) are human, in-platform actions. Automation/Relay touches only comms channels (email/Slack), never PadSplit. Writing to his live income-bearing platform is a different, forbidden risk class from reading it, and drafts-only forbids "submit" outright. The hard-wall harness asserts no PadSplit-write path exists.
+- **C-D3 — Turnover: locked constraints only; detailed design BLOCKED on Praise's checklist + a Josh clarification.** Client Q17 settles little and we won't over-design:
+  - **Locked:** the turnover checklist is **Praise's, not ours** (we don't design the steps); turnover is **room-level in an occupied co-living house** (cleaning/repairs/showings happen around sitting tenants); drafted comms must **"account for housemates not party to the turnover."**
+  - **BLOCKED on Praise's checklist** (pending from Praise) — it defines the steps Banks coordinates. No turnover step logic is built until it arrives; the fixture uses a placeholder checklist only.
+  - **FLAG TO JOSH (clarification):** "account for housemates" is ambiguous — does he want Banks to (i) **draft heads-up notices to housemates** about shared-space activity, or (ii) simply **keep housemates out of** the turnover comms (privacy/consideration)? Do not assume; ask. Digest-vs-per-event and whether housemate comms exist at all depend on his answer.
+  - Housemate identification, if needed, derives from the property→rooms mirror (occupied rooms at the address minus the turning room) — no new data.
+- **C-D4 — Review requests: triggers (client-given) + detection + draft→Praise routing.** Reviews go through **PadSplit's own review system** (Google integration dropped entirely, per Q16). Triggers and their detection:
+  - **Maintenance resolved promptly** — auto-detected from Banks' maintenance state machine (closed within N days of opening).
+  - **Smooth move-in** — auto-detected via proxy from the mirror: move-in occurred + no maintenance/complaint in the first N days.
+  - **Unprompted appreciation** — **not detectable by Banks** (tenants talk to Praise, not Banks, per C-D1). Kept alive by **relay**: Praise/Josh drops a line in `#banks` ("Room 3 tenant thanked us"), which B-D3 classification routes as a review-trigger signal.
+  - **Payment-streak trigger** — configurable, **off by default** (Q16).
+  - **Request routing:** Banks is read-only on PadSplit (C-D2), so it **drafts the review request → routes via C-D1 (Josh ✅ → Praise)**, and Praise triggers it in PadSplit's review system. Banks never touches PadSplit's review button.
+
 Re-seat every rental workflow on SourcePort + the Praise contacts layer:
 - Vacancy: pull from SourcePort, same-day detection, days-vacant clock (revenue lever #1).
 - Listings: extensible platform-format registry (PadSplit primary + Roomi + others from Praise); drafts only.
