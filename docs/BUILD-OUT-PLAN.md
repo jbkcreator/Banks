@@ -252,6 +252,13 @@ The deterministic non-agent executor that auto-sends exactly what Josh approved 
 
 **Phase F COMPLETE** — F-D1 decided.
 
+**Test-account de-risk (2026-08-05) — live adapters proven against throwaway accounts before client infra lands:**
+
+- **Slack** (E-D2) — post + reaction read-back verified.
+- **CalendarPort** — service-account **read-only** works (calendar shared with SA email); ID + key in `.env`. Client cutover = share his calendar with the SA email, swap ID. Conflict-detection demo pending a few seeded events.
+- **FilePort (Drive) — finding: personal/non-Workspace Drive filing requires OAuth, NOT a service account.** SA uploads fail `storageQuotaExceeded` (service accounts have no storage quota; can only borrow it via a Workspace Shared Drive — and client is explicitly non-Workspace, Q2). **Resolved via OAuth user delegation** — Banks authenticates *as the account owner* (one-time consent → refresh token via `scripts/mint_drive_token.py`), files owned by the user on their quota. **Verified live:** upload owned by the test user, not the SA. Client cutover = Josh does the one-time consent for his account, swap the refresh token. Least-privilege TODO: tighten scope from full `drive` to `drive.file` for production.
+- **E-D3 — Slack approval mechanism: reactions+polling is the default; Socket Mode + Block Kit buttons is a now-available upgrade (not deferred).** Correction to the earlier "buttons need a public server" claim: **Socket Mode** receives interactivity over a persistent outbound WebSocket (uses the `xapp-` app-level token already provisioned), so buttons work behind a firewall with no public endpoint. Real trade-off is stateless-poll vs always-on listener process (the latter needs a long-lived process, which the Phase-G box provides anyway). **Block Kit blocks for display** are usable now regardless (pure outbound). Default stays reactions+polling for the stateless 80%; buttons+Socket Mode selectable behind the same ChatPort seam without a domain change.
+
 ### Phase G — Infra-dependent 20% (deferred, not this phase)
 Only when creds land: live MailPort (Cloudflare), live SourcePort (PadSplit login), real Slack token swap, calendar share, Drive folder, Hetzner deploy, GitHub push. See §6.
 
