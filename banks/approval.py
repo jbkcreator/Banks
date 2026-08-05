@@ -107,32 +107,38 @@ def apply_action(
     draft_ref: str,
     user_id: str,
     *,
-    is_outbound: bool,
+    is_outbound: bool | None = None,
 ) -> ActionResult:
-    """Apply a click to decision-packet state. Pure w.r.t. Slack.
+    """Apply a click to decision-packet + send-intent state. Pure w.r.t. Slack.
 
-    draft_ref is the decision_packets id (as a string). `is_outbound` marks
-    drafts whose send_channel is email:* (R-D3) — only those enqueue Relay;
-    none:internal items are just acknowledged.
+    draft_ref is the decision_packets id (as a string). Whether the draft is
+    outbound is read from its send_intent (R-D3) — the send_channel fixed at
+    draft time. `is_outbound` is an optional override for tests without an
+    intent row.
     """
+    from .relay import approve_intent, is_outbound as intent_outbound, suppress_intent
+
     packet_id = int(draft_ref)
+    outbound = is_outbound if is_outbound is not None else intent_outbound(db_path, draft_ref)
 
     if action is ButtonAction.APPROVE:
         mark_answered(db_path, packet_id)
-        if is_outbound:
-            # Decision answered; Relay (separate process, R-D1) will send the
-            # frozen payload. We do NOT send here — the agent holds no sender.
+        if outbound:
+            # Decision answered; flip the intent to 'approved'. Relay (separate,
+            # sole credential-holder, R-D1) sends the frozen payload — not us.
+            approve_intent(db_path, draft_ref)
             return ActionResult("✅ *Approved* — Relay sending…", enqueue_send=True)
         return ActionResult("✅ *Approved* — acknowledged (nothing to send).")
 
     if action is ButtonAction.MARK_SENT:
-        # Josh sent it himself, or confirming Relay's send. Answered→completed.
+        # Josh sent it himself. Suppress the intent so Relay never fires (R-D4).
         mark_answered(db_path, packet_id)
         mark_completed(db_path, packet_id)
+        suppress_intent(db_path, draft_ref)
         return ActionResult("📤 *Sent* — completed.")
 
     if action is ButtonAction.REJECT:
-        # No state field for rejected yet; surfaced in the message, no Relay.
+        suppress_intent(db_path, draft_ref)
         return ActionResult("❌ *Rejected* — dropped, nothing sent.")
 
     # REVISE

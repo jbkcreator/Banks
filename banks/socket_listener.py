@@ -35,12 +35,10 @@ def _handle_action(cfg: BanksConfig, web, payload: dict) -> None:
     channel = (payload.get("channel") or {}).get("id")
     ts = (payload.get("message") or {}).get("ts")
 
-    # TODO(R-D3): look up the draft's send_channel to set is_outbound precisely.
-    # Until send_channel is persisted, treat clicks as non-outbound (acknowledge
-    # only) so nothing is ever handed to a sender before Relay/Resend exist.
-    result = apply_action(
-        cfg.db_path, button, draft_ref, user_id, is_outbound=False
-    )
+    # is_outbound is read from the draft's send_intent (R-D3), set at draft time
+    # by propose(). Approve on an email:* intent enqueues Relay; none:internal
+    # just acknowledges.
+    result = apply_action(cfg.db_path, button, draft_ref, user_id)
 
     if channel and ts:
         web.chat_update(

@@ -176,12 +176,20 @@ def test_no_fa_query_function_exists_anywhere():
     assert not offenders, f"Live FA-query-shaped function found: {offenders}"
 
 
-def test_no_outbound_http_client_imports():
-    """No requests/httpx/urllib usage anywhere — Banks has no network egress
-    beyond the Slack SDK (used only for the sanctioned #banks post)."""
+def test_raw_http_client_isolated_to_the_sender():
+    """Raw HTTP egress (urllib/requests/httpx) is confined to the sender.
+
+    Per A-D6 the wall is 'no Forced Action', not 'no network' — Banks reaches
+    Slack, Google, Resend. But per R-D1 the OUTBOUND SEND client is isolated to
+    banks/mailer.py (the credential Relay holds). No other module may open a raw
+    HTTP client; they go through ports/SDKs instead.
+    """
     forbidden_modules = {"requests", "httpx", "urllib.request"}
+    allowed = {"mailer.py"}  # the sender — Relay's credential lives here only
     offenders = []
     for path in _all_py_files(BANKS_PKG):
+        if path.name in allowed:
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -190,4 +198,23 @@ def test_no_outbound_http_client_imports():
                 for name in names:
                     if name in forbidden_modules:
                         offenders.append((str(path), name))
-    assert not offenders, f"Outbound HTTP client import found: {offenders}"
+    assert not offenders, f"Raw HTTP client outside the sender: {offenders}"
+
+
+def test_agent_cannot_import_the_sender():
+    """R-D1: only the Relay executor may import the send client. The agent
+    (everything but mailer.py + relay.py) must not reach banks.mailer, so a
+    compromised/prompt-injected agent has no sender to call."""
+    relay_side = {"mailer.py", "relay.py"}
+    offenders = []
+    for path in _all_py_files(BANKS_PKG):
+        if path.name in relay_side:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                names = [node.module] if isinstance(node, ast.ImportFrom) else []
+                names += [a.name for a in node.names]
+                if any(n and "mailer" in n for n in names):
+                    offenders.append((str(path), names))
+    assert not offenders, f"Agent module imports the sender (R-D1 breach): {offenders}"

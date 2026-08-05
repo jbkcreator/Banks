@@ -105,6 +105,30 @@ CREATE TABLE IF NOT EXISTS decision_packets (
     created_at TEXT NOT NULL
 );
 
+-- Relay (R-D1/R-D2/R-D3). The agent writes a send_intent (frozen payload +
+-- send_channel) on draft; Approve flips it to 'approved'. Relay — the ONLY
+-- holder of the outbound credential — reads approved intents and sends. It
+-- never re-reads the draft (no drift). draft_ref = decision_packets.id (str).
+CREATE TABLE IF NOT EXISTS send_intents (
+    draft_ref TEXT PRIMARY KEY,           -- = decision_packets.id
+    send_channel TEXT NOT NULL,           -- email:praise | email:sendas | none:internal
+    to_addr TEXT,
+    subject TEXT,
+    body TEXT,                            -- frozen bytes rendered + approved (R-D2)
+    status TEXT NOT NULL DEFAULT 'pending', -- pending | approved | sent | suppressed
+    created_at TEXT NOT NULL
+);
+
+-- Idempotency + receipts (R-D2). UNIQUE draft_ref = send exactly once even if
+-- the same Approve is seen twice. Failure leaves a row that ages in the brief.
+CREATE TABLE IF NOT EXISTS sent_receipts (
+    draft_ref TEXT PRIMARY KEY,           -- unique claim guard
+    status TEXT NOT NULL,                 -- sending | sent | failed
+    provider_id TEXT,
+    error TEXT,
+    updated_at TEXT NOT NULL
+);
+
 -- promises.md structured mirror — dollars-at-risk aging.
 CREATE TABLE IF NOT EXISTS promises (
     id INTEGER PRIMARY KEY,

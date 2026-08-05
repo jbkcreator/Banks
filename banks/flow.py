@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from .chatport import ChatPort
 from .enforcement import Draft
 from .packets import DecisionPacket, create_packet
+from .relay import enqueue_intent
 
 
 @dataclass(frozen=True)
@@ -23,9 +24,17 @@ class Proposed:
     post: dict
 
 
-def propose(db_path: str, packet: DecisionPacket, draft: Draft, chat: ChatPort) -> Proposed:
-    """Persist the decision, then post its draft with draft_ref = packet id."""
+def propose(db_path: str, packet: DecisionPacket, draft: Draft, chat: ChatPort,
+            send_channel: str = "none:internal") -> Proposed:
+    """Persist the decision, freeze the send intent, then post the draft.
+
+    `send_channel` (R-D3) is fixed at draft time: email:praise / email:sendas
+    (outbound, Relay sends on Approve) or none:internal (informational — Approve
+    just acknowledges). The intent captures the frozen payload (R-D2) now.
+    """
     packet_id = create_packet(db_path, packet)
     draft_ref = str(packet_id)
+    enqueue_intent(db_path, draft_ref, send_channel,
+                   to_addr=draft.to, subject=draft.subject, body=draft.body)
     post = chat.post_draft(draft, draft_ref)
     return Proposed(packet_id=packet_id, draft_ref=draft_ref, post=post)
