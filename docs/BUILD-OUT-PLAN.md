@@ -246,6 +246,12 @@ The deterministic non-agent executor that auto-sends exactly what Josh approved 
 - Re-run and extend the **FA hard-wall harness** (must stay green through all rework — no FA import/env/query path ever creeps in).
 - Target: full suite green; ~80% of total planned code complete.
 
+**Grilled decisions (Phase F):**
+
+- **F-D1 — Acceptance set = 8 day-in-life scenarios (all against fakes, end-to-end through ports + Relay) + 2 hard-blocking gates.** Scenarios: (1) vacancy→Praise draft→✅→Relay `email:praise`; (2) late payment→nudge, observe-only; (3) PadSplit-presented applicant→surfaced (no independent screening); (4) bill→7+1 nudge, `none:internal` Relay no-op on ✅; (5) calendar conflict→flag (personal block = real conflict); (6) resume+forwarded posting→application draft with gap flagged (`UnknownCareerFact` fires); (7) two-step loop ✅ auto-send+auto-📤, manual 📤 suppresses Relay; (8) morning brief failure-mode-first + approved-but-unsent aging on top. **Hard-blocking gates (a red here fails the phase regardless of scenarios):** FA hard-wall harness green (extended with R-D1 send-isolation AST test) + constitution SHA-256 integrity halt-on-tamper green. All green = **80% build done**.
+
+**Phase F COMPLETE** — F-D1 decided.
+
 ### Phase G — Infra-dependent 20% (deferred, not this phase)
 Only when creds land: live MailPort (Cloudflare), live SourcePort (PadSplit login), real Slack token swap, calendar share, Drive folder, Hetzner deploy, GitHub push. See §6.
 
