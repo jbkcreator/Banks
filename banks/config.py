@@ -33,6 +33,9 @@ class BanksConfig:
     # outbound WebSocket, no public endpoint. Distinct from the bot token.
     slack_app_token: str | None = None
     timezone: str = "America/New_York"
+    # Josh's own address — where detailed-financial drafts are emailed in full
+    # (Slack only ever carries the redacted summary).
+    josh_email: str | None = None
     db_path: str = "banks.db"
     # Where drafts land when Slack isn't provisioned yet (T2 pending): a local
     # outbox so the whole pipeline is exercisable before the token exists.
@@ -48,6 +51,7 @@ def load_config() -> BanksConfig:
         slack_bot_token=os.environ.get("BANKS_SLACK_BOT_TOKEN"),
         slack_channel_id=os.environ.get("BANKS_CHANNEL_ID"),
         slack_app_token=os.environ.get("BANKS_SLACK_APP_TOKEN"),
+        josh_email=os.environ.get("BANKS_JOSH_EMAIL"),
         timezone=os.environ.get("BANKS_TIMEZONE", "America/New_York"),
         db_path=os.environ.get("BANKS_DB_PATH", "banks.db"),
         outbox_dir=os.environ.get("BANKS_OUTBOX_DIR", "outbox"),
