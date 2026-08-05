@@ -213,6 +213,10 @@ Re-seat every rental workflow on SourcePort + the Praise contacts layer:
   - **Conflict = hard wall-clock overlap** (deterministic, no location guessing). Personal blocks treated identically to business per Q23. **Travel/buffer-aware detection flagged to Josh, not built** — needs location data the calendar may not carry; add later if his events carry locations.
   - **ROI meter:** weekly net = hours-saved × $48 − (our monthly operating cost ÷ 4.33). **Hours-saved derived from `activity_log` (B-D4)** completed events — each action type carries a standing minutes-saved estimate, tuned over time, **rounded down** (client's "can't flatter itself" intent). Cost figure still owed by us (§6).
 
+- **D-D4 — Bill nudge timing + never-pays.** Client (Q19) didn't specify cadence. **Fixed 7-day + 1-day before due** (due-date from D-D1 extraction); a past-due unpaid bill **escalates into the morning brief failure-mode-first block (B-D1)**. **Never-pays stays structural** — `finance.py` has no pay path; Banks drafts a reminder *to Josh*, never a payment. Amount-scaled cadence rejected (over-engineered for predictable value).
+
+**Phase D COMPLETE** — D-D1..D-D4 decided. Open Josh-facing flags from this phase: automated posting discovery (D-D2), travel-buffer conflict detection (D-D3), interview briefs (D-D2). Capital (Q22) remains FROZEN, out of Phase D.
+
 ### Phase E — Slack live path (uses test workspace — part of the 80%)
 - ChatPort live adapter against a **test Slack workspace**: post drafts, read reactions for two-step approval (✅ approve → then "sent" mark). Prove the real interaction, not just outbox. Swap to the client's real workspace token later = config change only.
 
