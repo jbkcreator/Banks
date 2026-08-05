@@ -229,6 +229,8 @@ Re-seat every rental workflow on SourcePort + the Praise contacts layer:
 
 The deterministic non-agent executor that auto-sends exactly what Josh approved on ✅. The LLM agent never holds send capability.
 
+**STATUS: BUILT + proven live 2026-08-05** — `banks/relay.py` + `banks/mailer.py` (Resend), `send_intents`/`sent_receipts` tables, wired through `flow.propose()` + `approval.apply_action`. End-to-end verified: propose outbound → Approve → Relay sent a real email via Resend, idempotent, receipt recorded. R-D1 enforced by hard-wall (`test_agent_cannot_import_the_sender`). **Resend is our pick pending Josh's sign-off** (client named Cloudflare, not a sender); swappable behind the Mailer seam. 72 tests.
+
 **Grilled decisions (Relay):**
 
 - **R-D1 — Send capability is structurally isolated: separate process + credential isolation + static harness test.** The send credential (Cloudflare send-as / SMTP token) lives **only in the Relay process's environment**, never loaded into the agent process. The agent writes an **approved-send intent row** to the store; Relay is the sole reader of intents and sole holder of the credential — the agent has no token to send with even if prompt-injected/compromised. Backed by a **static AST harness test** (mirroring the FA hard-wall test) asserting the agent package never imports the send/SMTP client and never reads the send-credential env var. Discipline-only same-process rejected (policy, not structure — same reason drafts-only is structural). The store's approved-intent row is the only channel agent→Relay.
