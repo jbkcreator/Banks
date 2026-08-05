@@ -43,6 +43,37 @@ def days_vacant(db_path: str, room_id: int, as_of: date | None = None) -> int | 
     return (as_of - signal_date).days
 
 
+def surface_vacancy(db_path, room_id: int, chat, platform: str = "PadSplit"):
+    """Turn a detected vacancy into a surfaced draft (#2: domain → propose()).
+
+    Builds the relisting draft + a DecisionPacket priced by the vacancy cost,
+    then posts it to #banks with approval buttons routed to Praise (email:praise,
+    C-D1 — Praise handles listing/syndication). Same-day listing is the biggest
+    co-living revenue lever (Q9), so this fires as soon as a room goes vacant.
+    """
+    from .flow import propose
+    from .packets import DecisionPacket
+
+    with cursor(db_path) as cur:
+        row = cur.execute(
+            "SELECT property_address, unit_label, current_rent_cents "
+            "FROM rooms WHERE id = ?", (room_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"no room {room_id}")
+    rent = row["current_rent_cents"] or 0
+    days = days_vacant(db_path, room_id) or 0
+    draft = relisting_draft(row["property_address"], row["unit_label"], rent, platform)
+    packet = DecisionPacket(
+        kind="vacancy_relist",
+        decision=f"{row['unit_label']} at {row['property_address']} is vacant "
+                 f"({days}d) — list on {platform}?",
+        recommendation=f"List at ${rent/100:,.0f}/mo today",
+        default_if_unanswered="list at last rate",
+        dollar_impact_cents=rent,  # a month's rent is the at-risk figure
+    )
+    return propose(db_path, packet, draft, chat, send_channel="email:praise")
+
+
 def relisting_draft(room_address: str, unit_label: str, rent_cents: int, platform: str) -> Draft:
     """Same-day re-listing draft. Platform + copy style are placeholders for Q15."""
     rent = rent_cents / 100
