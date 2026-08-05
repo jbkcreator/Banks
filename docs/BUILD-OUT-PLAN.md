@@ -92,9 +92,10 @@ Repo `FA/Banks/` — 2 commits, 54 tests passing. Triage:
 
 ## 4. Build phases
 
-### Phase A — Ports & seam (foundation for everything)
+### Phase A — Ports & seam (foundation for everything) — **STATUS: PLANNING (not started)**
 Define the six Port ABCs + a `Fakes` package driving all of them from fixtures. Wire dependency-injection so domain modules take ports as constructor args (no global singletons). This is the enabling move for the whole 80%.
 - Deliverable: `banks/ports/` (interfaces) + `banks/adapters/fake/` + fixture set in `tests/fixtures/`.
+- **Not yet built.** Design lives in §2. A first build attempt on 2026-08-05 was reverted to keep this a planning session; no ports/adapters code exists in the repo. Build begins only on explicit go-ahead.
 
 ### Phase B — Reconcile core to answers
 - Extend `packets.py` for the approved-but-unsent aging surface.
