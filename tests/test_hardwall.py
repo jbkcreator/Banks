@@ -186,8 +186,9 @@ def test_raw_http_client_isolated_to_the_sender():
     """
     forbidden_modules = {"requests", "httpx", "urllib.request"}
     # mailer.py: Resend send path (Relay credential). fileport.py: Drive API.
-    # llmport.py: OpenAI API. All are live-adapter leaves — not agent logic.
-    allowed = {"mailer.py", "fileport.py", "llmport.py"}
+    # llmport.py: OpenAI API. clay_port.py: Clay enrichment API.
+    # All are live-adapter leaves — not agent logic.
+    allowed = {"mailer.py", "fileport.py", "llmport.py", "clay_port.py"}
     offenders = []
     for path in _all_py_files(BANKS_PKG):
         if path.name in allowed:

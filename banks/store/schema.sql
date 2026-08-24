@@ -77,7 +77,12 @@ CREATE TABLE IF NOT EXISTS opportunities (
     application_drafted_at TEXT,
     submitted INTEGER NOT NULL DEFAULT 0,     -- always 0 by construction; see enforcement.py
     followed_up_at TEXT,
-    status TEXT NOT NULL DEFAULT 'sourced'    -- sourced | drafted | (never: submitted)
+    status TEXT NOT NULL DEFAULT 'sourced',   -- sourced | drafted | (never: submitted)
+    tier TEXT NOT NULL DEFAULT 'C',           -- A | B | C
+    pursuit_mode TEXT,                        -- full_time | contract_to_hire | fractional | consulting
+    company_normalized TEXT,                  -- lowercase, legal suffixes stripped
+    source_url TEXT,                          -- dedup primary key (exact match first)
+    contact_id INTEGER                        -- FK to contacts table
 );
 
 -- Standing job 6: capital & research desk. Findings only.
@@ -222,6 +227,18 @@ CREATE TABLE IF NOT EXISTS touch_log (
     address TEXT NOT NULL,
     draft_ref TEXT,                    -- decision_packets.id
     touched_at TEXT NOT NULL
+);
+
+-- MOD-02: 1st-degree contact graph for warm-path outreach.
+CREATE TABLE IF NOT EXISTS contacts (
+    id INTEGER PRIMARY KEY,
+    name TEXT,
+    company TEXT,
+    email TEXT,
+    linkedin_url TEXT,
+    degree INTEGER NOT NULL DEFAULT 1,  -- 1st-degree only at launch
+    source TEXT NOT NULL,               -- linkedin_csv | alumni_csv | recruiter_registry | manual
+    added_at TEXT NOT NULL
 );
 
 -- Correction taxonomy (Phase I T2-9): 8-code reason on every Revise action.
