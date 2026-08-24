@@ -17,6 +17,8 @@ import enum
 from dataclasses import dataclass
 
 from .enforcement import Draft
+from .refs import DraftRef
+from .relay import approve_intent, is_outbound as intent_outbound, suppress_intent
 from .packets import mark_answered, mark_completed
 
 
@@ -27,6 +29,35 @@ class ButtonAction(enum.Enum):
     MARK_SENT = "banks_sent"    # 📤 Josh did it himself / confirm sent → completed
     REJECT = "banks_reject"     # ❌ drop it
     REVISE = "banks_revise"     # ✍️ redraft requested
+
+
+# Correction taxonomy (T2-9): 8 codes attached to every Revise action.
+# Stored in corrections table; feeds lesson quarantine (C1).
+CORRECTION_CODES = (
+    "wrong_recipient",       # sent/drafted to the wrong person
+    "wrong_tone",            # too formal / too casual / inappropriate register
+    "factual_error",         # incorrect fact or number
+    "missing_context",       # draft lacked information Josh needed to evaluate it
+    "scope_too_broad",       # drafted more than was asked
+    "scope_too_narrow",      # missed something that should have been included
+    "timing_wrong",          # surfaced at the wrong moment
+    "other",                 # catch-all; note required
+)
+
+
+def record_correction(db_path: str, packet_id: int, code: str,
+                      note: str | None = None) -> None:
+    """Record a correction reason against a packet (called on Revise)."""
+    from datetime import datetime, timezone
+    from .store import cursor
+    if code not in CORRECTION_CODES:
+        raise ValueError(f"unknown correction code {code!r} — expected one of {CORRECTION_CODES}")
+    now = datetime.now(timezone.utc).isoformat()
+    with cursor(db_path) as cur:
+        cur.execute(
+            "INSERT INTO corrections (packet_id, code, note, recorded_at) VALUES (?, ?, ?, ?)",
+            (packet_id, code, note, now),
+        )
 
 
 # Human-facing labels (buttons) — kept next to the vocab so they stay in sync.
@@ -104,29 +135,30 @@ def _clean_styles(blocks: list[dict]) -> list[dict]:
 def apply_action(
     db_path: str,
     action: ButtonAction,
-    draft_ref: str,
+    draft_ref: DraftRef | str,
     user_id: str,
     *,
     is_outbound: bool | None = None,
 ) -> ActionResult:
     """Apply a click to decision-packet + send-intent state. Pure w.r.t. Slack.
 
-    draft_ref is the decision_packets id (as a string). Whether the draft is
-    outbound is read from its send_intent (R-D3) — the send_channel fixed at
-    draft time. `is_outbound` is an optional override for tests without an
-    intent row.
-    """
-    from .relay import approve_intent, is_outbound as intent_outbound, suppress_intent
+    Whether the draft is outbound comes from its send_intent's SendChannel
+    (R-D3) — fixed at draft time, and the channel answers for itself.
 
-    packet_id = int(draft_ref)
-    outbound = is_outbound if is_outbound is not None else intent_outbound(db_path, draft_ref)
+    `is_outbound` remains only as a test seam for packets deliberately created
+    without an intent row. It is NOT a routing decision: production callers must
+    never pass it, or the stored channel and the click could disagree.
+    """
+    ref = DraftRef.parse(draft_ref)
+    packet_id = ref.packet_id
+    outbound = is_outbound if is_outbound is not None else intent_outbound(db_path, ref)
 
     if action is ButtonAction.APPROVE:
         mark_answered(db_path, packet_id)
         if outbound:
             # Decision answered; flip the intent to 'approved'. Relay (separate,
             # sole credential-holder, R-D1) sends the frozen payload — not us.
-            approve_intent(db_path, draft_ref)
+            approve_intent(db_path, ref)
             return ActionResult("✅ *Approved* — Relay sending…", enqueue_send=True)
         return ActionResult("✅ *Approved* — acknowledged (nothing to send).")
 
@@ -134,11 +166,11 @@ def apply_action(
         # Josh sent it himself. Suppress the intent so Relay never fires (R-D4).
         mark_answered(db_path, packet_id)
         mark_completed(db_path, packet_id)
-        suppress_intent(db_path, draft_ref)
+        suppress_intent(db_path, ref)
         return ActionResult("📤 *Sent* — completed.")
 
     if action is ButtonAction.REJECT:
-        suppress_intent(db_path, draft_ref)
+        suppress_intent(db_path, ref)
         return ActionResult("❌ *Rejected* — dropped, nothing sent.")
 
     # REVISE

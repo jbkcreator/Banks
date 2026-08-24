@@ -6,6 +6,7 @@ import pytest
 
 from banks.chatport import FakeChatPort
 from banks.rentals import mark_vacant, surface_vacancy
+from banks.refs import SendChannel
 from banks.relay import intent_channel
 from banks.store import init_db, cursor
 
@@ -31,7 +32,7 @@ def test_surface_vacancy_posts_draft_routed_to_praise(db):
     actions = [b for b in chat.posts[0]["blocks"] if b["type"] == "actions"][0]
     assert all(e["value"] == res.draft_ref for e in actions["elements"])
     # routed to Praise (C-D1), priced at a month's rent
-    assert intent_channel(db, res.draft_ref) == "email:praise"
+    assert intent_channel(db, res.draft_ref) is SendChannel.PRAISE
     with cursor(db) as cur:
         row = cur.execute("SELECT decision, dollar_impact_cents FROM decision_packets "
                           "WHERE id=?", (res.packet_id,)).fetchone()

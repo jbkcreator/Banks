@@ -28,31 +28,40 @@ class DecisionPacket:
     deadline: str | None = None  # ISO datetime
 
 
-def create_packet(db_path: str, packet: DecisionPacket) -> int:
+_INSERT_PACKET = """
+    INSERT INTO decision_packets
+        (kind, decision, recommendation, alternative, evidence,
+         dollar_impact_cents, reversible, deadline, default_if_unanswered,
+         created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
+def create_packet(db_path: str, packet: DecisionPacket, cur=None) -> int:
+    """Insert a Decision Packet, returning its id.
+
+    Pass `cur` to join an existing `store.transaction()` — surfacing a draft
+    must write the packet and its send intent atomically (candidate 5).
+    """
     now = datetime.now(timezone.utc).isoformat()
-    with cursor(db_path) as cur:
-        cur.execute(
-            """
-            INSERT INTO decision_packets
-                (kind, decision, recommendation, alternative, evidence,
-                 dollar_impact_cents, reversible, deadline, default_if_unanswered,
-                 created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                packet.kind,
-                packet.decision,
-                packet.recommendation,
-                packet.alternative,
-                packet.evidence,
-                packet.dollar_impact_cents,
-                1 if packet.reversible else 0,
-                packet.deadline,
-                packet.default_if_unanswered,
-                now,
-            ),
-        )
+    params = (
+        packet.kind,
+        packet.decision,
+        packet.recommendation,
+        packet.alternative,
+        packet.evidence,
+        packet.dollar_impact_cents,
+        1 if packet.reversible else 0,
+        packet.deadline,
+        packet.default_if_unanswered,
+        now,
+    )
+    if cur is not None:
+        cur.execute(_INSERT_PACKET, params)
         return cur.lastrowid
+    with cursor(db_path) as own:
+        own.execute(_INSERT_PACKET, params)
+        return own.lastrowid
 
 
 def mark_answered(db_path: str, packet_id: int) -> None:

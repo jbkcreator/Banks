@@ -73,6 +73,16 @@ class Draft:
         )
 
 
+_SIGNATURE = "\n\n— Banks."
+
+
+def sign(text: str) -> str:
+    """Append '— Banks.' if not already present. Apply to every draft body."""
+    if text.rstrip().endswith("— Banks."):
+        return text
+    return text.rstrip() + _SIGNATURE
+
+
 # --- Operator verification --------------------------------------------------
 
 #: Categories that are "unusual" and demand operator verification before Banks

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .mailer import Mailer
+from .refs import DraftRef, SendChannel
 from .store import cursor
 
 # send_channel → the From address to use. Test uses Resend's sandbox sender;
@@ -26,50 +27,68 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def enqueue_intent(db_path: str, draft_ref: str, send_channel: str,
-                   to_addr: str | None, subject: str | None, body: str | None) -> None:
-    """Agent writes the frozen payload when a draft is proposed (status pending)."""
-    with cursor(db_path) as cur:
-        cur.execute(
-            "INSERT OR REPLACE INTO send_intents "
-            "(draft_ref, send_channel, to_addr, subject, body, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
-            (draft_ref, send_channel, to_addr, subject, body, _now()),
-        )
+_INSERT_INTENT = (
+    "INSERT OR REPLACE INTO send_intents "
+    "(draft_ref, send_channel, to_addr, subject, body, status, created_at) "
+    "VALUES (?, ?, ?, ?, ?, 'pending', ?)"
+)
 
 
-def intent_channel(db_path: str, draft_ref: str) -> str | None:
+def enqueue_intent(db_path: str, draft_ref: DraftRef | str,
+                   send_channel: SendChannel | str,
+                   to_addr: str | None, subject: str | None, body: str | None,
+                   cur=None) -> None:
+    """Agent writes the frozen payload when a draft is proposed (status pending).
+
+    Pass `cur` to join an existing `store.transaction()` so the intent commits
+    together with its decision packet (candidate 5).
+    """
+    ref = DraftRef.parse(draft_ref)
+    channel = SendChannel.parse(send_channel)
+    params = (str(ref), channel.value, to_addr, subject, body, _now())
+    if cur is not None:
+        cur.execute(_INSERT_INTENT, params)
+        return
+    with cursor(db_path) as own:
+        own.execute(_INSERT_INTENT, params)
+
+
+def intent_channel(db_path: str, draft_ref: DraftRef | str) -> SendChannel | None:
+    """The channel fixed at draft time, or None if there is no intent row."""
     with cursor(db_path) as cur:
         row = cur.execute(
-            "SELECT send_channel FROM send_intents WHERE draft_ref=?", (draft_ref,)
+            "SELECT send_channel FROM send_intents WHERE draft_ref=?",
+            (str(DraftRef.parse(draft_ref)),),
         ).fetchone()
-    return row["send_channel"] if row else None
+    return SendChannel.parse(row["send_channel"]) if row else None
 
 
-def is_outbound(db_path: str, draft_ref: str) -> bool:
-    ch = intent_channel(db_path, draft_ref)
-    return bool(ch and ch.startswith("email:"))
+def is_outbound(db_path: str, draft_ref: DraftRef | str) -> bool:
+    """Delegates to the channel's own answer — no prefix test lives here now."""
+    channel = intent_channel(db_path, draft_ref)
+    return channel.is_outbound if channel else False
 
 
-def approve_intent(db_path: str, draft_ref: str) -> bool:
+def approve_intent(db_path: str, draft_ref: DraftRef | str) -> bool:
     """Approve flips a pending outbound intent to 'approved'. Returns enqueued?"""
-    if not is_outbound(db_path, draft_ref):
+    ref = DraftRef.parse(draft_ref)
+    if not is_outbound(db_path, ref):
         return False
     with cursor(db_path) as cur:
         cur.execute(
             "UPDATE send_intents SET status='approved' "
             "WHERE draft_ref=? AND status='pending'",
-            (draft_ref,),
+            (str(ref),),
         )
     return True
 
 
-def suppress_intent(db_path: str, draft_ref: str) -> None:
+def suppress_intent(db_path: str, draft_ref: DraftRef | str) -> None:
     """Manual 'Mark sent' — Josh sent it himself; Relay must never fire (R-D4)."""
     with cursor(db_path) as cur:
         cur.execute(
             "UPDATE send_intents SET status='suppressed' WHERE draft_ref=?",
-            (draft_ref,),
+            (str(DraftRef.parse(draft_ref)),),
         )
 
 

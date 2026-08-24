@@ -18,6 +18,9 @@ FRESHNESS_DAYS = {
     "rent_comp": 30,
     "vendor_quote": 90,
     "bill": None,
+    # Q7: market brief is pasted daily. Missed a day → stale, flag rather than
+    # keep reasoning from an outdated brief as if current.
+    "market_brief": 1,
 }
 
 

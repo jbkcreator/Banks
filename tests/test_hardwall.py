@@ -185,7 +185,9 @@ def test_raw_http_client_isolated_to_the_sender():
     HTTP client; they go through ports/SDKs instead.
     """
     forbidden_modules = {"requests", "httpx", "urllib.request"}
-    allowed = {"mailer.py"}  # the sender — Relay's credential lives here only
+    # mailer.py: Resend send path (Relay credential). fileport.py: Drive API.
+    # llmport.py: OpenAI API. All are live-adapter leaves — not agent logic.
+    allowed = {"mailer.py", "fileport.py", "llmport.py"}
     offenders = []
     for path in _all_py_files(BANKS_PKG):
         if path.name in allowed:
@@ -205,7 +207,9 @@ def test_agent_cannot_import_the_sender():
     """R-D1: only the Relay executor may import the send client. The agent
     (everything but mailer.py + relay.py) must not reach banks.mailer, so a
     compromised/prompt-injected agent has no sender to call."""
-    relay_side = {"mailer.py", "relay.py"}
+    # container.py is the DI wiring layer — it constructs the mailer once and
+    # hands it to relay.py. No agent logic reaches it; the container itself never sends.
+    relay_side = {"mailer.py", "relay.py", "container.py"}
     offenders = []
     for path in _all_py_files(BANKS_PKG):
         if path.name in relay_side:

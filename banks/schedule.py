@@ -59,12 +59,23 @@ def occasion_draft(name: str, occasion: str, days_out: int) -> Draft:
 
 # --- Opportunity-cost meter (job 10) ----------------------------------------
 
+# Q24: $48/hr — $100k/yr over 2,080 working hours. Deliberately conservative
+# (not opportunity-cost) so ROI reporting can't flatter itself.
+HOURLY_VALUE_CENTS = 4800
+
+# Monthly operating cost — a figure we owe Josh (client answers, Part 3 Q24).
+# Env-overridable; 0 until we hand him the confirmed number, at which point the
+# weekly net is real from the first report. Keep conservative — never under-state
+# cost, or the meter flatters itself (the exact thing Q24 guards against).
+import os as _os  # noqa: E402
+DEFAULT_MONTHLY_COST_CENTS = int(_os.environ.get("BANKS_MONTHLY_COST_CENTS", "0"))
+
 
 @dataclass(frozen=True)
 class OpportunityCostInputs:
     hours_saved: float
-    hourly_value_cents: int   # Q35 — client figure
-    monthly_cost_cents: int   # Q35 — client figure (service) + auto-tracked compute
+    hourly_value_cents: int = HOURLY_VALUE_CENTS   # Q24 — $48/hr
+    monthly_cost_cents: int = DEFAULT_MONTHLY_COST_CENTS  # figure owed to Josh
 
 
 def weekly_roi(inputs: OpportunityCostInputs) -> dict:

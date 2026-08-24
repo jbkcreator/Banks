@@ -13,6 +13,7 @@ from banks.flow import propose, redraft
 from banks.jobs import run_due_jobs, run_job
 from banks.packets import DecisionPacket
 from banks.reactions import EMOJI_TO_ACTION, draft_ref_of, poll_once
+from banks.refs import SendChannel
 from banks.relay import intent_channel
 from banks.store import init_db, cursor
 
@@ -104,7 +105,7 @@ def test_financial_draft_routes_full_body_to_email_not_slack(db):
               detailed_financial=True)
     res = propose(db, _pkt("capital"), d, chat, josh_email="josh@example.com")
     # intent is outbound to Josh with FULL numbers
-    assert intent_channel(db, res.draft_ref) == "email:sendas"
+    assert intent_channel(db, res.draft_ref) is SendChannel.SENDAS
     with cursor(db) as cur:
         row = cur.execute("SELECT to_addr, body FROM send_intents WHERE draft_ref=?",
                           (res.draft_ref,)).fetchone()

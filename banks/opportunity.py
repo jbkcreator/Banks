@@ -10,11 +10,31 @@ supplied career-facts dict — Banks cannot invent, ever.
 
 from __future__ import annotations
 
+import email
+import email.policy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from .enforcement import Draft
 from .store import cursor
+
+if TYPE_CHECKING:
+    from .llmport import LLMPort
+
+_POSTING_EXTRACT_SYSTEM = (
+    "Extract job/opportunity details from this email. "
+    "Return ONLY valid JSON with keys: "
+    "title (str), company (str|null), role_type (str|null), "
+    "location (str|null), salary_range (str|null), source (str|null), "
+    "key_requirements (list[str])."
+)
+
+_GAP_FLAG_SYSTEM = (
+    "You are comparing a job posting to a candidate's career facts. "
+    "Identify ONLY real gaps — requirements in the posting not present in career facts. "
+    "Return ONLY valid JSON with keys: gaps (list[str]), match_score (int 0-100)."
+)
 
 
 class UnknownCareerFact(RuntimeError):
@@ -132,3 +152,86 @@ def record_followup(db_path: str, opportunity_id: int) -> None:
         cur.execute(
             "UPDATE opportunities SET followed_up_at = ? WHERE id = ?", (now, opportunity_id)
         )
+
+
+# --- Forwarded-posting pipeline (#7) ------------------------------------------
+
+@dataclass
+class PostingAnalysis:
+    extracted: dict          # raw LLM extract of the posting
+    gaps: list[str]          # requirements not covered by career_facts
+    match_score: int         # 0-100
+    draft: Draft             # application draft (from draft_application)
+
+
+def _email_body(raw_email: str) -> str:
+    try:
+        msg = email.message_from_string(raw_email, policy=email.policy.default)
+        subject = msg.get("Subject", "")
+        body = ""
+        if msg.is_multipart():
+            for part in msg.walk():
+                if part.get_content_type() == "text/plain":
+                    body = part.get_content()
+                    break
+        else:
+            body = msg.get_content()
+        return f"Subject: {subject}\n\n{body}"[:4000]
+    except Exception:
+        return raw_email[:4000]
+
+
+def process_forwarded_posting(
+    raw_email: str,
+    facts: CareerFacts,
+    llm: "LLMPort",
+    db_path: str | None = None,
+) -> PostingAnalysis:
+    """Forwarded job email → extract → gap-flag → draft (never submit).
+
+    If db_path provided, records the opportunity row automatically.
+    """
+    text = _email_body(raw_email)
+
+    # Step 1: extract posting details.
+    extracted = llm.extract_json(_POSTING_EXTRACT_SYSTEM, text)
+    title = extracted.get("title") or "Untitled opportunity"
+    source = extracted.get("source") or extracted.get("company") or "forwarded email"
+
+    # Step 2: gap-flag against career facts.
+    facts_summary = (
+        f"Experience: {'; '.join(facts.experience)}\n"
+        f"Skills: {', '.join(facts.skills)}\n"
+        f"Education: {'; '.join(facts.education)}"
+    )
+    gap_input = (
+        f"Job posting requirements: {extracted.get('key_requirements', [])}\n\n"
+        f"Candidate facts:\n{facts_summary}"
+    )
+    gap_result = llm.extract_json(_GAP_FLAG_SYSTEM, gap_input)
+    gaps = gap_result.get("gaps") or []
+    match_score = gap_result.get("match_score") or 50
+
+    # Step 3: draft application (no-embellishment guard is inside draft_application).
+    app_draft = draft_application(title, facts)
+
+    # Append gap summary to draft body if gaps exist.
+    if gaps:
+        gap_note = "\n\nGaps flagged (for your awareness):\n" + "\n".join(f"  • {g}" for g in gaps)
+        app_draft = Draft(
+            kind=app_draft.kind,
+            to=app_draft.to,
+            subject=app_draft.subject,
+            body=app_draft.body + gap_note,
+        )
+
+    if db_path:
+        opp_id = record_opportunity(db_path, title, source, match_score)
+        mark_application_drafted(db_path, opp_id)
+
+    return PostingAnalysis(
+        extracted=extracted,
+        gaps=gaps,
+        match_score=match_score,
+        draft=app_draft,
+    )

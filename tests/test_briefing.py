@@ -41,5 +41,12 @@ def test_section_order_is_fixed(db):
         "Today's top 1-3",
         "Vacancy",
         "Money due (7-day)",
+        "Collections",
+        "Deadline radar",
+        "Yesterday",
+        "Today's schedule",
+        "ROI this week",
+        "Daily Find",
+        "Today's scorecard",
         "Market brief",
     ]

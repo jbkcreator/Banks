@@ -58,6 +58,9 @@ CREATE TABLE IF NOT EXISTS bills (
     due_date TEXT NOT NULL,
     cadence TEXT NOT NULL,                -- monthly | annual | one_time | ...
     property_address TEXT,
+    -- Q19: tag personal vs property-level from the start; property-level bills
+    -- roll up per property for expense tracking. 'personal' | 'property'.
+    bill_category TEXT NOT NULL DEFAULT 'personal',
     is_subscription INTEGER NOT NULL DEFAULT 0,
     keep_kill_candidate INTEGER NOT NULL DEFAULT 0,
     keep_kill_memo TEXT,
@@ -159,6 +162,105 @@ CREATE TABLE IF NOT EXISTS scorecard_weekly (
     hours_saved REAL,
     hourly_value_cents INTEGER,
     monthly_cost_cents INTEGER
+);
+
+-- Activity log (B-D4): append-only event journal. Source for ROI meter,
+-- weekly scorecard hours_saved, and nightly recap. Never updated, only inserted.
+CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,          -- draft_created | draft_approved | draft_sent | vacancy_flagged | bill_nudged | opportunity_drafted | inquiry_answered | conflict_flagged | reflection_posted
+    ref TEXT,                    -- decision_packets.id or other entity id, nullable
+    minutes_saved REAL,          -- estimated time this would take Josh manually
+    meta TEXT,                   -- JSON blob, arbitrary context
+    ts TEXT NOT NULL             -- ISO-8601 UTC
+);
+
+-- Collections (Phase I A1): per-room rent tracking. Banks tracks & nudges only,
+-- never handles money. Populated from PadSplit SourcePort once creds land;
+-- seeded manually in tests. Feeds collections_on_time_pct on the scorecard.
+CREATE TABLE IF NOT EXISTS rent_charges (
+    id INTEGER PRIMARY KEY,
+    room_id INTEGER REFERENCES rooms(id),
+    period_start TEXT NOT NULL,            -- ISO date (month start)
+    period_end TEXT NOT NULL,              -- ISO date (month end)
+    amount_cents INTEGER NOT NULL,
+    due_date TEXT NOT NULL,                -- ISO date
+    status TEXT NOT NULL DEFAULT 'pending' -- pending | paid | late | waived
+);
+
+CREATE TABLE IF NOT EXISTS rent_payments (
+    id INTEGER PRIMARY KEY,
+    room_id INTEGER REFERENCES rooms(id),
+    charge_id INTEGER REFERENCES rent_charges(id),
+    paid_at TEXT NOT NULL,                 -- ISO datetime
+    amount_cents INTEGER NOT NULL,
+    source TEXT                            -- padsplit | manual | other
+);
+
+-- Issues (Phase I T2-7): 3 reds → Issue; every closed Issue names its artifact.
+CREATE TABLE IF NOT EXISTS issues (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    trigger TEXT NOT NULL,             -- '3_reds' | '3_consecutive_red_weeks' | 'manual'
+    week_ending TEXT,                  -- the scorecard week that triggered it
+    status TEXT NOT NULL DEFAULT 'open',  -- open | closed
+    artifact TEXT,                     -- required on close: what permanent thing was made
+    opened_at TEXT NOT NULL,
+    closed_at TEXT
+);
+
+-- Contact discipline (Phase I T2-8): suppression list + 48h touch log.
+-- Both enforced inside flow.propose() so no draft can bypass them.
+CREATE TABLE IF NOT EXISTS suppression_list (
+    address TEXT PRIMARY KEY,          -- email or name to never contact
+    reason TEXT,
+    added_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS touch_log (
+    id INTEGER PRIMARY KEY,
+    address TEXT NOT NULL,
+    draft_ref TEXT,                    -- decision_packets.id
+    touched_at TEXT NOT NULL
+);
+
+-- Correction taxonomy (Phase I T2-9): 8-code reason on every Revise action.
+-- Stored against the packet; feeds lesson quarantine (C1).
+CREATE TABLE IF NOT EXISTS corrections (
+    id INTEGER PRIMARY KEY,
+    packet_id INTEGER REFERENCES decision_packets(id),
+    code TEXT NOT NULL,                -- see CORRECTION_CODES in approval.py
+    note TEXT,
+    recorded_at TEXT NOT NULL
+);
+
+-- Lesson quarantine (Phase I T2-10): LOCAL → PROVISIONAL → FLEET.
+-- Nothing promotes itself; promotion requires 2+ independent instances.
+CREATE TABLE IF NOT EXISTS lessons (
+    id INTEGER PRIMARY KEY,
+    summary TEXT NOT NULL,
+    source_packet_id INTEGER REFERENCES decision_packets(id),
+    stage TEXT NOT NULL DEFAULT 'local',  -- local | provisional | fleet
+    instance_count INTEGER NOT NULL DEFAULT 1,
+    promoted_at TEXT,
+    created_at TEXT NOT NULL
+);
+
+-- Weekly biggest-miss (Phase I T2-12): one named miss per week.
+CREATE TABLE IF NOT EXISTS weekly_misses (
+    week_ending TEXT PRIMARY KEY,
+    miss TEXT NOT NULL,
+    owned_at TEXT NOT NULL
+);
+
+-- Daily Find (Phase I A3): one learning item per day. 'none' kind = honest empty.
+CREATE TABLE IF NOT EXISTS daily_finds (
+    date TEXT PRIMARY KEY,                 -- ISO date (the day)
+    kind TEXT NOT NULL DEFAULT 'none',     -- article | fact | tip | none
+    title TEXT,
+    url TEXT,
+    summary TEXT,
+    recorded_at TEXT NOT NULL
 );
 
 -- Self-healing (B9): retry-3-then-dead-letter + labeled degradation.

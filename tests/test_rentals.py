@@ -1,8 +1,6 @@
 from datetime import date, datetime, timezone
 
 from banks.rentals import (
-    ApplicantCriteria,
-    InquiryFacts,
     RateBenchmark,
     advance_maintenance,
     days_vacant,
@@ -11,7 +9,7 @@ from banks.rentals import (
     open_maintenance_over,
     rate_memo_draft,
     relisting_draft,
-    score_inquiry,
+    surface_presented_applicant,
     vendor_draft,
 )
 from banks.store import cursor
@@ -43,17 +41,15 @@ def test_relisting_draft_never_auto_posts():
     assert draft.kind == "relisting_sequence"
 
 
-def test_score_inquiry_uses_only_legitimate_factors():
-    criteria = ApplicantCriteria(min_income_multiple=3.0, min_credit_score=620)
-    strong = InquiryFacts(stated_income_cents=300000, credit_score=720)
-    weak = InquiryFacts(stated_income_cents=90000, credit_score=550)
-
-    strong_score = score_inquiry(strong, rent_cents=90000, criteria=criteria)
-    weak_score = score_inquiry(weak, rent_cents=90000, criteria=criteria)
-
-    assert strong_score > weak_score
-    assert 0 <= weak_score <= 100
-    assert 0 <= strong_score <= 100
+def test_surface_presented_applicant_relays_without_screening(db_path):
+    # Q13: Banks relays PadSplit's presentation verbatim, never scores.
+    from banks.chatport import FakeChatPort
+    room_id = _seed_room(db_path)
+    chat = FakeChatPort()
+    summary = "Verified income 3.2x rent; credit 690; move-in Sept 1 (PadSplit)."
+    proposed = surface_presented_applicant(db_path, room_id, "Jane Doe", summary, chat)
+    assert proposed is not None
+    assert len(chat.posts) == 1
 
 
 def test_inquiry_reply_drives_to_application_link():

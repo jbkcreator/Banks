@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from .approval import ButtonAction, apply_action
 from .config import BanksConfig, load_config
+from .halt import is_halt_command, set_halt
 
 
 def _handle_action(cfg: BanksConfig, web, payload: dict) -> None:
@@ -71,6 +72,19 @@ def run(cfg: BanksConfig | None = None) -> None:
     def _on(client: SocketModeClient, req: SocketModeRequest) -> None:
         # Ack first (Slack requires a prompt ack), then act.
         client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
+
+        # Kill command (T3-14): handle plain messages before button dispatch.
+        if req.type == "events_api":
+            event = (req.payload.get("event") or {})
+            text = event.get("text") or ""
+            if is_halt_command(text):
+                set_halt(reason=f"operator command: '{text.strip()}'")
+                web.chat_postMessage(
+                    channel=cfg.slack_channel_id or "",
+                    text="🛑 *Banks halted.* All jobs suspended. Restart to resume.",
+                )
+                return
+
         if req.type == "interactive":
             try:
                 _handle_action(cfg, web, req.payload)
