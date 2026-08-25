@@ -29,6 +29,8 @@ class BanksConfig:
 
     slack_bot_token: str | None
     slack_channel_id: str | None
+    # #banks-jobs channel for Daily Attack Queue (MOD-05). Confirmed: C0BNGMYHFEF
+    slack_jobs_channel_id: str | None = None
     # App-level token (xapp-) for Socket Mode — receives button clicks over an
     # outbound WebSocket, no public endpoint. Distinct from the bot token.
     slack_app_token: str | None = None
@@ -39,6 +41,7 @@ class BanksConfig:
     # Google Calendar (read-only, service account). CalendarPort live target.
     gcp_sa_key: str | None = None
     calendar_id: str | None = None
+    clay_api_key: str | None = None
     db_path: str = "banks.db"
     # Where drafts land when Slack isn't provisioned yet (T2 pending): a local
     # outbox so the whole pipeline is exercisable before the token exists.
@@ -53,11 +56,13 @@ def load_config() -> BanksConfig:
     return BanksConfig(
         slack_bot_token=os.environ.get("BANKS_SLACK_BOT_TOKEN"),
         slack_channel_id=os.environ.get("BANKS_CHANNEL_ID"),
+        slack_jobs_channel_id=os.environ.get("BANKS_JOBS_CHANNEL_ID", "C0BNGMYHFEF"),
         slack_app_token=os.environ.get("BANKS_SLACK_APP_TOKEN"),
         josh_email=os.environ.get("BANKS_JOSH_EMAIL"),
         gcp_sa_key=os.environ.get("BANKS_GCP_SA_KEY"),
         calendar_id=os.environ.get("BANKS_CALENDAR_ID"),
         timezone=os.environ.get("BANKS_TIMEZONE", "America/New_York"),
+        clay_api_key=os.environ.get("BANKS_CLAY_API_KEY"),
         db_path=os.environ.get("BANKS_DB_PATH", "banks.db"),
         outbox_dir=os.environ.get("BANKS_OUTBOX_DIR", "outbox"),
     )

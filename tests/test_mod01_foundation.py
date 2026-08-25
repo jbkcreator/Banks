@@ -314,13 +314,15 @@ def test_score_vertical_unrelated():
 # ---------------------------------------------------------------------------
 # Follow-up cadence
 
-def test_next_follow_up_day5():
+def test_next_follow_up_day3():
+    # Day 3 after apply (plan MOD-04: Day 3/7/14).
     result = next_follow_up_date("2026-08-24", touches_sent=0)
-    assert result == "2026-08-29"
+    assert result == "2026-08-27"
 
-def test_next_follow_up_day21():
+def test_next_follow_up_day14():
+    # 3rd touch = Day 14 after apply.
     result = next_follow_up_date("2026-08-24", touches_sent=2)
-    assert result == "2026-09-14"
+    assert result == "2026-09-07"
 
 def test_next_follow_up_complete():
     assert next_follow_up_date("2026-08-24", touches_sent=3) is None

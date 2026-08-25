@@ -82,7 +82,12 @@ CREATE TABLE IF NOT EXISTS opportunities (
     pursuit_mode TEXT,                        -- full_time | contract_to_hire | fractional | consulting
     company_normalized TEXT,                  -- lowercase, legal suffixes stripped
     source_url TEXT,                          -- dedup primary key (exact match first)
-    contact_id INTEGER                        -- FK to contacts table
+    contact_id INTEGER,                       -- FK to contacts table
+    -- 1 while comp/vertical are unknown (e.g. Simplify-only intake). Such rows
+    -- are recorded but NOT surfaced to Slack — tiering is half-blind until
+    -- enrichment fills comp+vertical, at which point score is recomputed and
+    -- needs_enrichment flips to 0 (then Tier A/B may surface). Decision 4.
+    needs_enrichment INTEGER NOT NULL DEFAULT 0
 );
 
 -- Standing job 6: capital & research desk. Findings only.
@@ -246,6 +251,14 @@ CREATE TABLE IF NOT EXISTS contacts (
     linkedin_url TEXT,
     degree INTEGER NOT NULL DEFAULT 1,  -- 1st-degree only at launch
     source TEXT NOT NULL,               -- linkedin_csv | alumni_csv | recruiter_registry | manual
+    -- Decision 5: alumni & recruiters overlap the LinkedIn connections dump, so
+    -- ingestion MERGES on linkedin_url and upgrades the source label (recruiter
+    -- > alumni > linkedin) rather than skipping — otherwise a warm recruiter is
+    -- indistinguishable from a random connection. These hold the richer fields.
+    title TEXT,                         -- recruiter/contact title
+    vertical_fit TEXT,                  -- recruiter registry: GTM/PropTech/etc.
+    notes TEXT,                         -- recruiter registry notes (surfaced in Slack)
+    position TEXT,                      -- connection/alumni current position
     added_at TEXT NOT NULL
 );
 

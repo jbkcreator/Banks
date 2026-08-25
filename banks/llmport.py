@@ -65,9 +65,11 @@ class ClaudeLLMPort:
     MODEL = CHEAP_MODEL
 
     def __init__(self, api_key: str | None = None) -> None:
-        self._key = api_key or os.environ.get("BANKS_ANTHROPIC_API_KEY")
+        self._key = (api_key
+                     or os.environ.get("BANKS_ANTHROPIC_API_KEY")
+                     or os.environ.get("ANTHROPIC_API_KEY"))
         if not self._key:
-            raise ValueError("BANKS_ANTHROPIC_API_KEY not set")
+            raise ValueError("BANKS_ANTHROPIC_API_KEY (or ANTHROPIC_API_KEY) not set")
 
     def _model_for_tier(self, tier: str) -> str:
         return self.PREMIUM_MODEL if tier == "premium" else self.CHEAP_MODEL
@@ -113,7 +115,7 @@ class ClaudeLLMPort:
 
 
 def load_llm_port() -> LLMPort:
-    """Return live Claude port if key present, Fake otherwise."""
-    if os.environ.get("BANKS_ANTHROPIC_API_KEY"):
+    """Return live Claude port if a key is present, Fake otherwise."""
+    if os.environ.get("BANKS_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"):
         return ClaudeLLMPort()
     return FakeLLMPort()

@@ -1,13 +1,15 @@
-"""Follow-up cadence rules (locked 2026-08-25).
+"""Follow-up cadence rules.
 
-3 touches max: Day 5, Day 12, Day 21 after application date.
+3 touches max: Day 3, Day 7, Day 14 after application date — per the signed
+Maximum Distribution Build plan (MOD-04, lines 60/161). (An earlier draft used
+5/12/21; corrected to match the contract 2026-08-25.)
 Auto-stop on: Slack 'got a reply' button OR status flips to interviewing/closed.
 """
 from __future__ import annotations
 
 import datetime
 
-FOLLOW_UP_DAYS = [5, 12, 21]
+FOLLOW_UP_DAYS = [3, 7, 14]
 MAX_TOUCHES = 3
 
 

@@ -69,13 +69,32 @@ class OpportunityCriteria:
     remote_ok: bool = True
 
 
-def record_opportunity(db_path: str, title: str, source: str, match_score: int) -> int:
-    now = datetime.now(timezone.utc).isoformat()
+def record_opportunity(
+    db_path: str,
+    title: str,
+    source: str,
+    match_score: int,
+    *,
+    tier: str = "C",
+    pursuit_mode: str | None = None,
+    company_normalized: str | None = None,
+    source_url: str | None = None,
+    contact_id: int | None = None,
+    needs_enrichment: bool = False,
+) -> int:
+    """Insert an opportunity row. MOD-01 columns (tier, pursuit_mode,
+    company_normalized, source_url, needs_enrichment) are keyword-only so
+    pre-MOD-01 callers keep working; the intake pipeline passes them so dedup
+    Pass 1 (source_url) works and half-blind rows are held back (Decision 4).
+    """
     with cursor(db_path) as cur:
         cur.execute(
-            "INSERT INTO opportunities (title, source, criteria_match_score, status) "
-            "VALUES (?, ?, ?, 'sourced')",
-            (title, source, match_score),
+            "INSERT INTO opportunities "
+            "(title, source, criteria_match_score, status, tier, pursuit_mode, "
+            " company_normalized, source_url, contact_id, needs_enrichment) "
+            "VALUES (?, ?, ?, 'sourced', ?, ?, ?, ?, ?, ?)",
+            (title, source, match_score, tier, pursuit_mode,
+             company_normalized, source_url, contact_id, 1 if needs_enrichment else 0),
         )
         return cur.lastrowid
 

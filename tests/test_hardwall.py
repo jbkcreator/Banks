@@ -188,7 +188,8 @@ def test_raw_http_client_isolated_to_the_sender():
     # mailer.py: Resend send path (Relay credential). fileport.py: Drive API.
     # llmport.py: OpenAI API. clay_port.py: Clay enrichment API.
     # All are live-adapter leaves — not agent logic.
-    allowed = {"mailer.py", "fileport.py", "llmport.py", "clay_port.py"}
+    # enrich.py: LiveFetchPort reads job postings (read-only GET).
+    allowed = {"mailer.py", "fileport.py", "llmport.py", "clay_port.py", "enrich.py"}
     offenders = []
     for path in _all_py_files(BANKS_PKG):
         if path.name in allowed:

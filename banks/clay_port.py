@@ -5,10 +5,10 @@ Hard-walled: zero FA imports. Credentials via load_config().
 """
 from __future__ import annotations
 
-import os
 from typing import Protocol
 
 import httpx
+from banks.config import load_config
 
 _CLAY_BASE = "https://api.clay.com/v1"
 
@@ -33,7 +33,7 @@ class LiveClayPort:
     """Calls api.clay.com/v1/sources/enrichment. Requires BANKS_CLAY_API_KEY."""
 
     def enrich(self, company: str, name: str | None = None) -> dict:
-        api_key = os.environ.get("BANKS_CLAY_API_KEY", "")
+        api_key = load_config().clay_api_key or ""
         payload: dict = {"company_name": company}
         if name:
             payload["full_name"] = name
