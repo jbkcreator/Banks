@@ -31,14 +31,14 @@ Schema: `banks/store/schema.sql` (idempotent `CREATE TABLE IF NOT EXISTS`).
 
 | Module | Scope | Status |
 |---|---|---|
-| MOD-01 | Application intake, dedup, fit scoring, tiering | **Foundation complete, e2e-tested** |
-| MOD-02 | Contact resolution, enrichment, warm-path graph | **Foundation complete; Clay blocked (see below)** |
-| MOD-03 | 7 distribution lanes & surround workflow | Not started (infra ~40% via flow/relay/approval) |
-| MOD-04 | Follow-up cadence & reply-stop | Cadence built (`cadence.py`, **Day 3/7/14** per plan); reply-stop = manual Slack button |
-| MOD-05 | Slack command & control (Daily Attack Queue) | Channel id wired (`C0BNGMYHFEF`); not built |
-| MOD-06 | Adversarial exclusion & launch staging | `company_exclusions` table + checks live |
+| MOD-01 | Application intake, dedup, fit scoring, tiering | **Build-complete, e2e-tested, live** |
+| MOD-02 | Contact resolution, enrichment, warm-path graph | **Build-complete, e2e-tested; Clay enrichment needs paid plan** |
+| MOD-03 | 7 distribution lanes & surround workflow | **Build-complete, code-reviewed, 358 tests green** |
+| MOD-04 | Follow-up cadence, governance, collision ledger | **Build-complete, code-reviewed, 358 tests green** |
+| MOD-05 | Slack command & control (Daily Attack Queue) | Not started — needs dedicated Banks Slack app |
+| MOD-06 | Adversarial exclusion & launch staging | Not started — needs Josh's full exclusion list |
 
-### MOD-01/02 key modules (all unit-tested, 299 tests green)
+### MOD-01/02 key modules (all unit-tested, 358 tests green)
 - `banks/intake.py` — the orchestration seam. `ingest_simplify()` runs
   parse→exclude→dedup→normalise→classify→score→tier→record; `ingest_contacts()`
   loads + merges the contact graph; `export_enrichment_queue()` writes the manual
@@ -65,6 +65,12 @@ Schema: `banks/store/schema.sql` (idempotent `CREATE TABLE IF NOT EXISTS`).
   (paid, inert until upgraded). Cold Tier A/B opportunity → `enrichment_queue`.
   (The old `clay_port.py` was deleted — superseded by this.)
 
+### MOD-03/04 key modules (build-complete, reviewed)
+- `banks/surround.py` — `generate_surround_pack()`: Tier A → full surround pack; Tier B → recruiter only. Posts each lane as a separate Slack card. Company-freeze check before generating. Warm-intro state machine (ASKED→AGREED→INTRODUCED, auto-STALL 7 days).
+- `banks/lanes.py` — 7 lane drafters: hiring_manager, recruiter, employee, warm_intro, linkedin, pov_brief, consulting. All facts-only, LLM optional. Empty career-facts → raises ValueError.
+- `banks/governance.py` — Daily caps (email 40, LinkedIn 20, overflow-safe); `got_reply()` atomically freezes company + cadence; `queue_cadence()` Day 3/7/14 keyed off `outreach_lanes.sent_at`; `due_cadence_touches()` stops on interviewing/closed; `network_activation_due()`; `weekly_funnel_summary()`; `check_14day_spacing()` by contact_id.
+- Schema additions: `outreach_lanes`, `warm_intros`, `cadence_queue`, `governance_ledger`, `company_freeze`, `funnel_events`.
+
 ### Locked decisions (2026-08-25)
 - **Decision 4 (surface policy):** Simplify has no salary/industry → tiering is
   half-blind → rows recorded with `needs_enrichment=1` and **NOT surfaced** to
@@ -82,24 +88,18 @@ Schema: `banks/store/schema.sql` (idempotent `CREATE TABLE IF NOT EXISTS`).
   `LiveClayEnrichmentPort` (batch push+poll) is inert until a paid plan lands
   (CLIENT_QUERIES_V2 item 5). Lean on LinkedIn-export emails first.
 
-## Open blockers to going live (MOD-01/02)
-1. **`BANKS_ANTHROPIC_API_KEY` missing** — no real LLM (JD extraction, draft
-   copy). Not mentioned in Josh's answers. Falls back to FakeLLMPort. Real
-   blocker for intelligence.
-2. **Real Slack workspace** — bot token in `.env` is the *test* workspace
-   ("bank test", team T0BNYH0JSSC). Channel `C0BNGMYHFEF` lives in the real
-   Forced Action Leads workspace → `channel_not_found` with the test token. The
-   Banks app must be installed in that workspace to get its `xoxb-` token.
-3. **`career-facts.md` is empty** — Josh must fill it before any application
-   draft (MOD-03) can be generated. NOT a MOD-01/02 blocker — intake/scoring/
-   surfacing work without it.
+## Open blockers to going live
 
-_Deferred (not blocking):_ Hetzner production server (24/7 deploy only, MOD-06);
-LoopCV export (Simplify-only at launch); Clay real enrichment (free tier blocks
-API — manual CSV or revert to Hunter.io/Anymail).
+- **MOD-01:** None — e2e tested and live.
+- **MOD-02:** Paid Clay/Hunter.io for hands-off contact enrichment. Manual CSV path ($0) works in the interim.
+- **MOD-03:** `career-facts.md` must be populated (Josh's resume); domain + from-email for email lane sending.
+- **MOD-04:** Dedicated Banks Slack app for Interview/Offer button wiring.
+- **MOD-05/06:** Not started — see module status table above.
+
+_Deferred (not blocking):_ Hetzner production server (24/7 deploy, MOD-06); LoopCV export (Simplify-only at launch).
 
 ## Testing
-`python -m pytest tests/ -q` — 287 passing. Every new external adapter must be
+`python -m pytest tests/ -q` — **358 passing**. Every new external adapter must be
 added to `test_hardwall.py`'s allowlist and prove no FA imports.
 
 ## Git
