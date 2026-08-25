@@ -65,12 +65,15 @@ def test_tier_a_generates_pov_brief(db_path):
     assert "recruiter" in types
 
 
-def test_tier_b_no_pov_brief(db_path):
+def test_tier_b_recruiter_only(db_path):
+    """Tier B → recruiter lane only, no hiring manager, warm intro, or POV brief."""
     opp_id = _make_opp(db_path, tier="B")
     pack = generate_surround_pack(db_path, opp_id, FACTS, FakeChatPort())
     types = [l["type"] for l in pack.lanes]
-    assert "pov_brief" not in types
     assert "recruiter" in types
+    assert "pov_brief" not in types
+    assert "hiring_manager" not in types
+    assert "warm_intro" not in types
 
 
 def test_verified_contact_uses_hiring_manager_lane(db_path):
@@ -187,3 +190,54 @@ def test_stall_does_not_affect_recent(db_path):
         )
     count = stall_aged_warm_intros(db_path, stall_after_days=7)
     assert count == 0
+
+
+def test_advance_manual_stalled_raises(db_path):
+    """STALLED is auto-only — manual attempt must raise."""
+    with pytest.raises(ValueError, match="STALLED"):
+        advance_warm_intro(db_path, 1, 1, "STALLED")
+
+
+def test_stall_creates_secondary_escalation_lane(db_path):
+    opp_id = _make_opp(db_path, tier="A")
+    cid = _insert_contact(db_path, "Acme")
+    old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=10)).isoformat()
+    with cursor(db_path) as cur:
+        cur.execute(
+            "INSERT INTO warm_intros "
+            "(opportunity_id, contact_id, state, asked_at, state_changed_at) "
+            "VALUES (?, ?, 'ASKED', ?, ?)",
+            (opp_id, cid, old, old),
+        )
+    stall_aged_warm_intros(db_path, stall_after_days=7)
+    with cursor(db_path) as cur:
+        row = cur.execute(
+            "SELECT lane_type, status FROM outreach_lanes "
+            "WHERE opportunity_id = ? AND lane_type = 'secondary_escalation'",
+            (opp_id,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "pending"
+
+
+def test_consulting_lane_added_for_fractional_mode(db_path):
+    opp_id = record_opportunity(
+        db_path, "Fractional CRO", "simplify", 80,
+        tier="A", company_normalized="acme", industry="SaaS",
+        pursuit_mode="fractional",
+    )
+    pack = generate_surround_pack(db_path, opp_id, FACTS, FakeChatPort())
+    types = [l["type"] for l in pack.lanes]
+    assert "consulting" in types
+
+
+def test_consulting_lane_added_tier_b_fractional(db_path):
+    opp_id = record_opportunity(
+        db_path, "Fractional Head of Sales", "simplify", 60,
+        tier="B", company_normalized="acme", industry="SaaS",
+        pursuit_mode="consulting",
+    )
+    pack = generate_surround_pack(db_path, opp_id, FACTS, FakeChatPort())
+    types = [l["type"] for l in pack.lanes]
+    assert "consulting" in types
+    assert "recruiter" in types

@@ -15,8 +15,13 @@ from banks.governance import (
     freeze_company,
     got_reply,
     is_company_frozen,
+    mark_lane_sent,
+    network_activation_due,
+    pending_secondary_escalations,
     queue_cadence,
     record_funnel_event,
+    record_interview,
+    record_offer,
     weekly_funnel_summary,
 )
 from banks.opportunity import record_opportunity
@@ -220,8 +225,122 @@ def test_14day_spacing_recent_touch_blocked(db_path):
             (now,),
         )
         cid = cur.lastrowid
+        # Uses outreach_lanes.sent_at (keyed by contact_id) — not touch_log
         cur.execute(
-            "INSERT INTO touch_log (address, touched_at) VALUES ('b@x.com', ?)",
-            (now,),
+            "INSERT INTO outreach_lanes "
+            "(opportunity_id, lane_type, contact_id, status, created_at, sent_at) "
+            "VALUES (1, 'hiring_manager', ?, 'sent', ?, ?)",
+            (cid, now, now),
         )
     assert check_14day_spacing(db_path, cid, "2026-08-25") is False
+
+
+# --- new: record_interview / record_offer ---
+
+def test_record_interview(db_path):
+    opp_id = _opp(db_path)
+    record_interview(db_path, opp_id)
+    summary = weekly_funnel_summary(db_path, "2026-08-25")
+    assert summary.get("interview", 0) >= 1
+
+
+def test_record_offer(db_path):
+    opp_id = _opp(db_path)
+    record_offer(db_path, opp_id)
+    summary = weekly_funnel_summary(db_path, "2026-08-25")
+    assert summary.get("offer", 0) >= 1
+
+
+# --- new: cadence stops on interviewing/closed ---
+
+def test_cadence_stops_when_interviewing(db_path):
+    opp_id = _opp(db_path)
+    lane_id = _lane(db_path, opp_id)
+    queue_cadence(db_path, lane_id, "2026-08-25")
+    with cursor(db_path) as cur:
+        cur.execute(
+            "UPDATE opportunities SET status = 'interviewing' WHERE id = ?", (opp_id,)
+        )
+    touches = due_cadence_touches(db_path, "2026-09-10")
+    assert len(touches) == 0
+
+
+def test_cadence_stops_when_closed(db_path):
+    opp_id = _opp(db_path)
+    lane_id = _lane(db_path, opp_id)
+    queue_cadence(db_path, lane_id, "2026-08-25")
+    with cursor(db_path) as cur:
+        cur.execute(
+            "UPDATE opportunities SET status = 'closed' WHERE id = ?", (opp_id,)
+        )
+    touches = due_cadence_touches(db_path, "2026-09-10")
+    assert len(touches) == 0
+
+
+# --- new: queue_cadence reads sent_at from lane ---
+
+def test_queue_cadence_reads_lane_sent_at(db_path):
+    opp_id = _opp(db_path)
+    with cursor(db_path) as cur:
+        cur.execute(
+            "INSERT INTO outreach_lanes "
+            "(opportunity_id, lane_type, created_at, sent_at) "
+            "VALUES (?, 'hiring_manager', '2026-08-25T00:00:00', '2026-08-25T00:00:00')",
+            (opp_id,),
+        )
+        lane_id = cur.lastrowid
+    queue_cadence(db_path, lane_id)  # no sent_date arg — reads from lane
+    touches = due_cadence_touches(db_path, "2026-08-28")
+    assert len(touches) == 1
+
+
+# --- new: mark_lane_sent ---
+
+def test_mark_lane_sent(db_path):
+    opp_id = _opp(db_path)
+    lane_id = _lane(db_path, opp_id)
+    mark_lane_sent(db_path, lane_id)
+    with cursor(db_path) as cur:
+        row = cur.execute(
+            "SELECT status, sent_at FROM outreach_lanes WHERE id = ?", (lane_id,)
+        ).fetchone()
+    assert row["status"] == "sent"
+    assert row["sent_at"] is not None
+
+
+# --- new: network_activation_due ---
+
+def test_network_activation_due_returns_untouched(db_path):
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    with cursor(db_path) as cur:
+        cur.execute(
+            "INSERT INTO contacts (name, email, degree, source, added_at) "
+            "VALUES ('Alice', 'a@x.com', 1, 'linkedin_csv', ?)",
+            (now,),
+        )
+    contacts = network_activation_due(db_path, "2026-08-25", limit=3)
+    assert len(contacts) >= 1
+
+
+def test_network_activation_ranks_decision_makers_first(db_path):
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    with cursor(db_path) as cur:
+        cur.execute(
+            "INSERT INTO contacts (name, title, degree, source, added_at) "
+            "VALUES ('Bob', 'VP Sales', 1, 'linkedin_csv', ?)",
+            (now,),
+        )
+        cur.execute(
+            "INSERT INTO contacts (name, title, degree, source, added_at) "
+            "VALUES ('Carol', 'SDR', 1, 'linkedin_csv', ?)",
+            (now,),
+        )
+    contacts = network_activation_due(db_path, "2026-08-25", limit=5)
+    names = [c["name"] for c in contacts]
+    assert names.index("Bob") < names.index("Carol")
+
+
+# --- new: pending_secondary_escalations ---
+
+def test_pending_secondary_escalations_empty(db_path):
+    assert pending_secondary_escalations(db_path) == []

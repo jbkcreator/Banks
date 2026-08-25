@@ -201,28 +201,26 @@ def draft_pov_brief(
     )
 
 
-def draft_no_role(
-    target_company: str,
-    angle: str,
-    facts: CareerFacts,
+def draft_consulting_lane(
+    title: str, company: str, facts: CareerFacts,
     llm: "LLMPort | None" = None,
 ) -> Draft:
-    """Josh-initiated no-open-role pitch. `angle`: 'executive' or 'fractional'."""
+    """Fractional/consulting pitch — auto-routed when pursuit_mode is fractional/consulting."""
     _require_facts(facts)
-    exp = "; ".join(facts.experience[:2]) if facts.experience else "see resume"
-    track = facts.seeking or "my GTM leadership track record"
+    skills_blurb = "; ".join(facts.skills[:3]) if facts.skills else "GTM strategy"
+    seeking = facts.seeking or f"fractional GTM leadership ({skills_blurb})"
     body = (
         f"Hi,\n\n"
-        f"I'm reaching out because I've been following {target_company} and think my background "
-        f"could be valuable — particularly given {track}.\n\n"
-        f"Angle: {angle}\n"
-        f"Experience: {exp}\n\n"
-        f"Would love to explore if there's a fit, even informally.\n\n"
+        f"I've been following {company} and think there could be a fit for a fractional or "
+        f"consulting engagement — particularly around the {title} scope.\n\n"
+        f"My positioning: {seeking}\n"
+        f"Relevant background: {'; '.join(facts.experience[:2]) if facts.experience else 'see resume'}\n\n"
+        f"Happy to discuss scope, engagement shape, or timing — even informally.\n\n"
         f"[Draft from career-facts only — review before sending.]"
     )
     return Draft(
-        kind="no_role_pitch",
-        to=target_company,
-        subject=f"Exploring opportunities — {target_company}",
+        kind="consulting_pitch",
+        to=company,
+        subject=f"Fractional/consulting interest — {company}",
         body=body,
     )
