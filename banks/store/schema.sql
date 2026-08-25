@@ -342,3 +342,70 @@ CREATE TABLE IF NOT EXISTS fact_freshness (
     recorded_at TEXT NOT NULL,
     value TEXT
 );
+
+-- MOD-03: Outreach lanes — one row per lane per opportunity.
+-- Each lane is a separately-approvable Slack card (surround.py).
+CREATE TABLE IF NOT EXISTS outreach_lanes (
+    id INTEGER PRIMARY KEY,
+    opportunity_id INTEGER NOT NULL,
+    lane_type TEXT NOT NULL,  -- hiring_manager | recruiter | employee | warm_intro | pov_brief | linkedin | no_role | consulting
+    contact_id INTEGER,
+    draft_ref TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending | approved | sent | stalled | frozen | skipped
+    created_at TEXT NOT NULL,
+    sent_at TEXT
+);
+
+-- MOD-03: Warm-intro state machine (ASKED → AGREED → INTRODUCED; auto-STALLED after 7 days).
+CREATE TABLE IF NOT EXISTS warm_intros (
+    id INTEGER PRIMARY KEY,
+    opportunity_id INTEGER NOT NULL,
+    contact_id INTEGER NOT NULL,
+    state TEXT NOT NULL DEFAULT 'ASKED',  -- ASKED | AGREED | INTRODUCED | STALLED
+    asked_at TEXT NOT NULL,
+    state_changed_at TEXT NOT NULL,
+    notes TEXT,
+    UNIQUE(opportunity_id, contact_id)
+);
+
+-- MOD-04: Follow-up cadence queue (Day 3/7/14 keyed from sent_at).
+-- Stops on: 'got a reply', 3 touches reached, or opportunity status in (interviewing, closed).
+CREATE TABLE IF NOT EXISTS cadence_queue (
+    id INTEGER PRIMARY KEY,
+    outreach_lane_id INTEGER NOT NULL,
+    touch_number INTEGER NOT NULL,  -- 1 | 2 | 3
+    due_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending | surfaced | sent | skipped | frozen
+    draft_ref TEXT,
+    surfaced_at TEXT,
+    sent_at TEXT,
+    UNIQUE(outreach_lane_id, touch_number)
+);
+
+-- MOD-04: Governance ledger — daily channel caps (email 40/day, LinkedIn 20/day).
+-- Overflow queues to next day, never dropped.
+CREATE TABLE IF NOT EXISTS governance_ledger (
+    id INTEGER PRIMARY KEY,
+    date TEXT NOT NULL,
+    channel TEXT NOT NULL,    -- email | linkedin
+    count INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(date, channel)
+);
+
+-- MOD-04: Collision protection — company freeze on 'got a reply' signal.
+-- thaw_at NULL = manual-thaw only; ISO datetime = auto-thaws at that time.
+CREATE TABLE IF NOT EXISTS company_freeze (
+    company_normalized TEXT PRIMARY KEY,
+    frozen_at TEXT NOT NULL,
+    reason TEXT,              -- got_reply | manual
+    thaw_at TEXT
+);
+
+-- MOD-04: Funnel event log (applied → contacted → replied → intro_made → interview → offer).
+-- Derived from existing signals + buttons; shown as weekly scorecard funnel line.
+CREATE TABLE IF NOT EXISTS funnel_events (
+    id INTEGER PRIMARY KEY,
+    opportunity_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,  -- applied | contacted | replied | intro_made | interview | offer
+    ts TEXT NOT NULL
+);
