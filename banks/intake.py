@@ -130,9 +130,15 @@ def _surface_opportunity(db_path, chat, opp_id, parsed, fit, tier, pursuit_mode)
     warm = find_warm_contacts(db_path, company, limit=3)
     if warm:
         attach_contact(db_path, opp_id, warm[0]["id"])
-    warm_lines = "\n".join(f"  • {describe_contact(c)}" for c in warm)
-    warm_block = (f"\n\nWarm path — you know {len(warm)} here:\n{warm_lines}"
-                  if warm else "\n\nWarm path: no known contacts at this company yet.")
+        warm_block = ("\n\nWarm path — you know %d here:\n%s"
+                      % (len(warm), "\n".join(f"  • {describe_contact(c)}" for c in warm)))
+    else:
+        # Cold company (Q8): queue it for contact enrichment (find the requisition
+        # owner + verified email). Nightly jobs drain the queue.
+        from .contact_enrichment import enqueue_company
+        enqueue_company(db_path, normalise_company(company), role_hint=title,
+                        opportunity_id=opp_id)
+        warm_block = "\n\nWarm path: no known contacts yet — queued for enrichment."
     warm_evidence = f" · warm: {describe_contact(warm[0])}" if warm else " · warm: none"
 
     packet = DecisionPacket(

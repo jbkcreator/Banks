@@ -259,7 +259,27 @@ CREATE TABLE IF NOT EXISTS contacts (
     vertical_fit TEXT,                  -- recruiter registry: GTM/PropTech/etc.
     notes TEXT,                         -- recruiter registry notes (surfaced in Slack)
     position TEXT,                      -- connection/alumni current position
+    -- Contact enrichment (MOD-02): verified = provider confidence high enough to
+    -- email; unverified/none routes to a LinkedIn DM draft instead. enriched_at
+    -- drives the 30-day cache TTL so the same person isn't re-looked-up.
+    verified INTEGER NOT NULL DEFAULT 0,
+    enriched_at TEXT,
     added_at TEXT NOT NULL
+);
+
+-- Contact-enrichment queue (MOD-02). A Tier A/B opportunity with no known warm
+-- contact enqueues its company here. A nightly job submits the batch to the
+-- EnrichmentPort (Clay); a retrieve job writes results into contacts and
+-- re-runs the warm-path attach. Batch/async by nature — Clay returns later.
+CREATE TABLE IF NOT EXISTS enrichment_queue (
+    id INTEGER PRIMARY KEY,
+    company_normalized TEXT NOT NULL,
+    role_hint TEXT,                     -- opportunity title, guides discovery
+    opportunity_id INTEGER,             -- which opp to re-attach on resolve
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending | submitted | done | failed
+    batch_id TEXT,
+    requested_at TEXT NOT NULL,
+    resolved_at TEXT
 );
 
 -- Correction taxonomy (Phase I T2-9): 8-code reason on every Revise action.

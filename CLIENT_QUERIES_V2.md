@@ -68,21 +68,30 @@ build._
 
 ---
 
-## 🔎 One thing to decide (enrichment)
+## 🔎 Enrichment — Clay (decided: we build the Clay path)
 
-**5. Finding cold contact emails**
-You picked Clay — but Clay's **free tier blocks all automated access** (we tested
-it; the API is paywalled at ~$134/mo now). Good news: you mostly won't need it —
-your LinkedIn export already includes emails, and your warm alumni/recruiters are
-people you already know. For the occasional cold hiring manager, pick one:
+**Decision:** we're building contact enrichment on **Clay** (your pick). This is
+the piece that finds a hiring manager's verified email when they're not already
+in your network.
 
-- **(a)** Manual: Banks lists the few it can't find; you run them through Clay's
-  free UI by hand. **$0.** _(our recommendation)_
-- **(b)** Switch to Hunter.io / Anymail Finder (the tools in the original plan —
-  proper APIs, free/cheap tiers).
-- **(c)** Upgrade Clay to a paid plan.
+**The blocker to flag:** Clay's **free tier does not allow programmatic access** —
+we tested it live and the API/webhook/Sheets are all paywalled as of Clay's 2026
+pricing. So the automated Clay enrichment **cannot run until the account is on a
+paid plan.** We'll build it now so it's ready the moment the plan is upgraded.
 
-→ Just tell us (a), (b), or (c).
+**5. What we need to make Clay enrichment work (paid)**
+→ Are you willing to upgrade the Clay account to a paid plan? The relevant tiers:
+  - **Starter (~$134/mo)** — lets us use Clay with our own API keys programmatically
+  - **Explorer (~$314/mo)** — adds webhook access
+  - **Growth (~$495/mo)** — adds full HTTP API
+→ Which plan, and **who provisions/pays** for it (you, or billed through the project)?
+→ Until it's paid, do you want the **interim manual path** (Banks lists contacts
+  it can't resolve → you run them through Clay's free UI by hand → drop the file
+  back)? Yes/No.
+
+_Note: much of the time Clay isn't even needed — your LinkedIn export already
+carries emails and your warm contacts are people you know. Clay is only for the
+occasional cold hiring manager Banks can't otherwise resolve._
 
 ---
 
