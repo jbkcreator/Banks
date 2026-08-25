@@ -1,7 +1,12 @@
 """EmailPort: parse inbound confirmation emails and match to opportunities.
 
+SPEC'D scope (MOD-01 "forwarded email confirmation listener"), intentionally
+DORMANT: the parser/Fake exist but there is no LiveEmailPort or caller yet —
+both blocked on the client mailbox/domain (CLIENT_QUERIES_V2 item 4b). Not
+speculative — pending a client input.
+
 Fake uses in-memory message dicts; Live would use IMAP/forwarding webhook.
-Reply-stop is manual (Slack 'got a reply' button) — no inbox monitoring needed at launch.
+Reply-stop is manual (Slack 'got a reply' button) — no inbox monitoring at launch.
 """
 from __future__ import annotations
 

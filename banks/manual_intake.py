@@ -34,39 +34,48 @@ from . import score as _score
 # Pull an annual BASE figure in thousands ($k) from free-text JD copy. We take
 # the LOWER bound of any range (conservative — score against what's guaranteed).
 
-# "$150,000", "$150K", "150k", "USD 180,000", "$150,000 - $200,000", "$150k–$200k"
+_COMP_FLOOR_K, _COMP_CEIL_K = 80, 900  # plausible annual-base window, in $k
+
+# One money token, captured whole so we never mis-split the digits:
+#   $150,000 | 150,000 | $150k | 150K | $95,000 | 180000 | $230,000
 _MONEY = re.compile(
-    r"\$?\s*(\d{2,3}(?:,\d{3})?|\d{2,3})\s*(k\b|,000|000\b)?",
-    re.IGNORECASE,
+    r"""\$?\s*
+        (?P<num>\d{1,3}(?:,\d{3})+     # comma-grouped: 150,000 / 95,000
+              | \d{2,3}\s*[kK]         # k-suffixed:    150k / 95K
+              | \d{4,7}                # bare thousands: 180000
+              | \d{2,3})               # bare 2-3 digit: 150
+        (?P<k>\s*[kK])?
+    """,
+    re.VERBOSE,
 )
-_COMP_CONTEXT = re.compile(
-    r"(base|salary|compensation|pay|OTE|\$)", re.IGNORECASE
-)
+_COMP_CONTEXT = re.compile(r"(base|salary|compensation|pay|OTE|\$)", re.IGNORECASE)
+
+
+def _to_thousands(raw: str, had_k: bool) -> float:
+    """Normalise one captured money token to $k."""
+    digits = raw.replace(",", "").strip().rstrip("kK").strip()
+    n = float(digits)
+    if had_k or "k" in raw.lower():
+        return n                     # already in thousands (150k -> 150)
+    if "," in raw or n >= 1000:
+        return n / 1000              # 150,000 / 180000 -> 150
+    return n                         # bare 2-3 digit -> already thousands (150)
 
 
 def extract_comp_k(text: str) -> float | None:
     """Return the annual base in thousands (e.g. 150.0 for $150k), or None.
 
-    Only considers figures that sit near comp language, to avoid picking up
-    unrelated numbers ("500 employees", "founded 2019"). Takes the smallest
-    plausible base in the $80k–$900k window (lower bound of any range).
+    Considers only figures near comp language (skips "500 employees",
+    "founded 2019"), normalises each whole token to $k, keeps those in the
+    $80k–$900k window, and returns the lower bound of any range.
     """
     candidates: list[float] = []
     for m in _MONEY.finditer(text):
-        # require comp context within ~40 chars before the match
         start = max(0, m.start() - 40)
         if not _COMP_CONTEXT.search(text[start:m.start() + 1]):
             continue
-        num = float(m.group(1).replace(",", ""))
-        unit = (m.group(2) or "").lower()
-        if unit in ("k",):
-            k = num
-        elif unit in (",000", "000"):
-            k = num  # "$150,000" -> group(1)=150, treat as 150k
-        else:
-            # bare number: 150 -> 150k; 150000 -> 150k
-            k = num / 1000 if num >= 1000 else num
-        if 80 <= k <= 900:
+        k = _to_thousands(m.group("num"), bool(m.group("k")))
+        if _COMP_FLOOR_K <= k <= _COMP_CEIL_K:
             candidates.append(k)
     return min(candidates) if candidates else None
 
@@ -133,27 +142,21 @@ def ingest_manual(
         return ManualIntakeResult(dup, "-", 0, False, False, None, skipped="duplicate")
 
     pursuit_mode = classify_pursuit_mode(f"{title} {jd_text or ''}")
-    # Gate on industry (the differentiator); comp stays neutral when unknown.
-    needs_enrichment = not (industry and industry.strip())
-    fit = _score.compute_fit_score(
-        _score.score_comp(comp_k),
-        _score.score_vertical(industry),
-        _score.score_geo(location),
-        _score.score_pursuit_mode(pursuit_mode),
-    )
-    tier = _score.assign_tier(fit)
+    fit, tier, needs_enrichment = _score.score_role(
+        comp_k=comp_k, industry=industry, location=location, pursuit_mode=pursuit_mode)
 
     opp_id = record_opportunity(
         db_path, title, "manual", fit,
         tier=tier, pursuit_mode=pursuit_mode,
         company_normalized=normalise_company(company), source_url=source_url,
-        needs_enrichment=needs_enrichment,
+        needs_enrichment=needs_enrichment, industry=industry,
     )
 
     proposal = None
     surfaced = False
     if not needs_enrichment and tier in surface_tiers:
-        parsed = {"title": title, "company": company, "location": location}
+        parsed = {"title": title, "company": company, "location": location,
+                  "industry": industry}
         proposal = _surface_opportunity(db_path, chat, opp_id, parsed, fit, tier, pursuit_mode)
         mark_application_drafted(db_path, opp_id)
         surfaced = True

@@ -11,10 +11,15 @@ what connects a scored Tier A role (MOD-01) to a real human to reach (MOD-02).
 """
 from __future__ import annotations
 
+import re
+
 from .normalise import normalise_company
 from .store import cursor
 
-# Warm-first ordering — a former colleague or a recruiter beats a cold connection.
+# Outreach WARMTH ordering — a recruiter/former colleague beats a cold
+# connection; a bare manual entry is the weakest referral. NOTE: intentionally
+# distinct from intake._SOURCE_PRIORITY (merge label priority), where `manual`
+# ranks highest — different purpose, so they are not shared.
 _SOURCE_RANK = {"recruiter_registry": 3, "alumni_csv": 2, "linkedin_csv": 1, "manual": 0}
 
 # Titles that signal a hiring decision-maker / functional owner (plan MOD-02).
@@ -42,6 +47,36 @@ def find_warm_contacts(db_path: str, company: str, limit: int = 3) -> list[dict]
     return sorted(rows, key=_relevance, reverse=True)[:limit]
 
 
+def find_referral_paths(db_path: str, company: str, industry: str | None = None,
+                        limit: int = 3) -> list[dict]:
+    """Warm-intro + referral paths for a company, warmest first (P2).
+
+    Two path types, both from 1st-degree data (no fake 2nd-degree hops):
+      * 'direct'    — someone Josh already knows AT the company (warm intro)
+      * 'recruiter' — a recruiter whose vertical_fit matches the role's industry
+                      (the "secondary referral avenue" when Josh knows no one there)
+    """
+    direct = find_warm_contacts(db_path, company, limit=limit)
+    for c in direct:
+        c["path"] = "direct"
+
+    recruiters: list[dict] = []
+    if industry:
+        toks = [t for t in re.split(r"[/,&\s]+", industry.lower()) if len(t) > 2]
+        with cursor(db_path) as cur:
+            rows = [dict(r) for r in cur.execute(
+                "SELECT id, name, company, email, linkedin_url, source, title, "
+                "vertical_fit, position FROM contacts WHERE source = 'recruiter_registry'"
+            ).fetchall()]
+        for r in rows:
+            vf = (r.get("vertical_fit") or "").lower()
+            if any(t in vf for t in toks):
+                r["path"] = "recruiter"
+                recruiters.append(r)
+
+    return direct + recruiters[:limit]
+
+
 def attach_contact(db_path: str, opportunity_id: int, contact_id: int) -> None:
     """Link the resolved warm contact to the opportunity (populates contact_id)."""
     with cursor(db_path) as cur:
@@ -53,9 +88,14 @@ def describe_contact(c: dict) -> str:
     """One-line human description for the Slack card."""
     role = c.get("title") or c.get("position") or ""
     label = {"recruiter_registry": "recruiter", "alumni_csv": "former colleague",
-             "linkedin_csv": "connection"}.get(c.get("source", ""), "contact")
+             "linkedin_csv": "connection",
+             "clay_enrichment": "resolved contact"}.get(c.get("source", ""), "contact")
     bits = [c.get("name", "").strip()]
     if role:
         bits.append(f"({role})")
     line = " ".join(b for b in bits if b)
+    # Recruiter surfaced as a referral avenue (not "at this company").
+    if c.get("path") == "recruiter":
+        vf = c.get("vertical_fit") or ""
+        return f"{line} — recruiter (referral avenue{', ' + vf if vf else ''})"
     return f"{line} — your {label}"

@@ -32,10 +32,14 @@ from .normalise import classify_pursuit_mode, normalise_company
 from .opportunity import mark_application_drafted, record_opportunity
 from .packets import DecisionPacket
 from .store import cursor
-from .warmpath import attach_contact, describe_contact, find_warm_contacts
+from .warmpath import (attach_contact, describe_contact, find_referral_paths,
+                       find_warm_contacts)
 
-# Source label priority for contact merge (Decision 5): a richer/warmer source
-# overrides a thinner one when the same person appears in multiple files.
+# MERGE priority (Decision 5): when the same person appears in several import
+# files, which source LABEL to keep. `manual` ranks HIGHEST — a hand-added label
+# is a deliberate override. NOTE: intentionally distinct from
+# warmpath._SOURCE_RANK (outreach *warmth*), where `manual` ranks lowest —
+# different purpose, so they are not shared.
 _SOURCE_PRIORITY = {"linkedin_csv": 1, "alumni_csv": 2, "recruiter_registry": 3, "manual": 4}
 
 
@@ -50,18 +54,14 @@ class IntakeResult:
 
 
 def _score_row(parsed: dict, comp_k: float | None, vertical: str | None) -> tuple[int, str, str, bool]:
-    """Return (fit_score, tier, pursuit_mode, needs_enrichment)."""
+    """Return (fit_score, tier, pursuit_mode, needs_enrichment) — via score.score_role."""
     pursuit_mode = classify_pursuit_mode(
         f"{parsed.get('title', '')} {parsed.get('job_type', '')}"
     )
-    needs_enrichment = not (vertical and vertical.strip())
-    fit = _score.compute_fit_score(
-        _score.score_comp(comp_k),
-        _score.score_vertical(vertical),
-        _score.score_geo(parsed.get("location", "")),
-        _score.score_pursuit_mode(pursuit_mode),
-    )
-    return fit, _score.assign_tier(fit), pursuit_mode, needs_enrichment
+    fit, tier, needs_enrichment = _score.score_role(
+        comp_k=comp_k, industry=vertical,
+        location=parsed.get("location", ""), pursuit_mode=pursuit_mode)
+    return fit, tier, pursuit_mode, needs_enrichment
 
 
 def ingest_simplify(
@@ -126,20 +126,25 @@ def _surface_opportunity(db_path, chat, opp_id, parsed, fit, tier, pursuit_mode)
     title, company = parsed["title"], parsed["company"]
     loc = parsed.get("location", "")
 
-    # MOD-01 ↔ MOD-02 join: who does Josh already know at this company?
-    warm = find_warm_contacts(db_path, company, limit=3)
-    if warm:
-        attach_contact(db_path, opp_id, warm[0]["id"])
-        warm_block = ("\n\nWarm path — you know %d here:\n%s"
-                      % (len(warm), "\n".join(f"  • {describe_contact(c)}" for c in warm)))
+    # MOD-01 ↔ MOD-02 join (P2): warm-intro + referral paths for this company.
+    industry = parsed.get("industry")
+    paths = find_referral_paths(db_path, company, industry, limit=3)
+    direct = [p for p in paths if p.get("path") == "direct"]
+    if direct:
+        attach_contact(db_path, opp_id, direct[0]["id"])  # attach warmest direct
+
+    if paths:
+        warm_block = ("\n\nWarm path — %d option(s):\n%s"
+                      % (len(paths), "\n".join(f"  • {describe_contact(c)}" for c in paths)))
+        warm_evidence = f" · warm: {describe_contact(paths[0])}"
     else:
-        # Cold company (Q8): queue it for contact enrichment (find the requisition
-        # owner + verified email). Nightly jobs drain the queue.
+        # Cold company, no direct contact and no matching recruiter (Q8): queue it
+        # for contact enrichment (find the requisition owner + verified email).
         from .contact_enrichment import enqueue_company
         enqueue_company(db_path, normalise_company(company), role_hint=title,
                         opportunity_id=opp_id)
         warm_block = "\n\nWarm path: no known contacts yet — queued for enrichment."
-    warm_evidence = f" · warm: {describe_contact(warm[0])}" if warm else " · warm: none"
+        warm_evidence = " · warm: none"
 
     packet = DecisionPacket(
         kind="opportunity",

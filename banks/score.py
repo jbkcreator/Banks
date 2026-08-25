@@ -91,3 +91,21 @@ def compute_fit_score(
         + pursuit_score * 20
     )
     return round(raw)
+
+
+def score_role(comp_k, industry, location, pursuit_mode):
+    """Score one role end to end. The single home for the fit→tier→hold decision
+    (was copy-pasted across intake/manual_intake/enrich).
+
+    Returns (fit 0–100, tier A/B/C, needs_enrichment). needs_enrichment gates on
+    INDUSTRY — postings rarely publish salary, so requiring comp would hold every
+    row forever; comp stays neutral (0.5) when unknown.
+    """
+    fit = compute_fit_score(
+        score_comp(comp_k),
+        score_vertical(industry),
+        score_geo(location or ""),
+        score_pursuit_mode(pursuit_mode),
+    )
+    needs_enrichment = not (industry and str(industry).strip())
+    return fit, assign_tier(fit), needs_enrichment

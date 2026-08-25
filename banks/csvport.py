@@ -41,7 +41,9 @@ class LiveCSVPort:
 
 
 # ---------------------------------------------------------------------------
-# LoopCV  (column names TBC — dormant until Josh exports real file)
+# LoopCV  — SPEC'D scope (MOD-01 "LoopCV / Simplify Intake"), intentionally
+# DORMANT until Josh sets up LoopCV and exports a real file (column names TBC).
+# Not speculative — pending a client input.
 
 def parse_loopcv_row(row: dict) -> dict:
     return {

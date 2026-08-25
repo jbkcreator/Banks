@@ -65,11 +65,12 @@ class ClaudeLLMPort:
     MODEL = CHEAP_MODEL
 
     def __init__(self, api_key: str | None = None) -> None:
-        self._key = (api_key
-                     or os.environ.get("BANKS_ANTHROPIC_API_KEY")
-                     or os.environ.get("ANTHROPIC_API_KEY"))
+        # Banks-namespaced key only (via load_config) — never the generic
+        # ANTHROPIC_API_KEY, so a shared env can't leak FA's key into Banks.
+        from .config import load_config
+        self._key = api_key or load_config().anthropic_api_key
         if not self._key:
-            raise ValueError("BANKS_ANTHROPIC_API_KEY (or ANTHROPIC_API_KEY) not set")
+            raise ValueError("BANKS_ANTHROPIC_API_KEY not set")
 
     def _model_for_tier(self, tier: str) -> str:
         return self.PREMIUM_MODEL if tier == "premium" else self.CHEAP_MODEL
@@ -115,7 +116,8 @@ class ClaudeLLMPort:
 
 
 def load_llm_port() -> LLMPort:
-    """Return live Claude port if a key is present, Fake otherwise."""
-    if os.environ.get("BANKS_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"):
+    """Return live Claude port if the Banks key is present, Fake otherwise."""
+    from .config import load_config
+    if load_config().anthropic_api_key:
         return ClaudeLLMPort()
     return FakeLLMPort()

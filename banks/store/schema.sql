@@ -87,7 +87,10 @@ CREATE TABLE IF NOT EXISTS opportunities (
     -- are recorded but NOT surfaced to Slack — tiering is half-blind until
     -- enrichment fills comp+vertical, at which point score is recomputed and
     -- needs_enrichment flips to 0 (then Tier A/B may surface). Decision 4.
-    needs_enrichment INTEGER NOT NULL DEFAULT 0
+    needs_enrichment INTEGER NOT NULL DEFAULT 0,
+    -- Role's industry/vertical (from JD extraction). Persisted so the warm-path
+    -- referral engine can match a recruiter's vertical_fit to the role (P2).
+    industry TEXT
 );
 
 -- Standing job 6: capital & research desk. Findings only.

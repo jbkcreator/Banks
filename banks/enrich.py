@@ -91,7 +91,7 @@ def enrich_opportunity(
         return EnrichResult(opp_id, "no_url", "-", 0)
     url = row["source_url"]
     if not url:
-        return EnrichResult(opp_id, "no_url", row["tier"] if "tier" in row.keys() else "-", 0)
+        return EnrichResult(opp_id, "no_url", "-", 0)
 
     text = fetch.fetch(url)
     if not text:
@@ -103,23 +103,14 @@ def enrich_opportunity(
     location = ex.get("location") or ""
 
     pursuit_mode = row["pursuit_mode"] or "full_time"
-    fit = _score.compute_fit_score(
-        _score.score_comp(comp_k),
-        _score.score_vertical(industry),
-        _score.score_geo(location),
-        _score.score_pursuit_mode(pursuit_mode),
-    )
-    tier = _score.assign_tier(fit)
-    # Gate on INDUSTRY, not comp: postings rarely publish salary, so requiring
-    # comp would hold everything forever. Industry is the real differentiator;
-    # comp stays neutral (0.5) when unknown, same benefit-of-the-doubt as before.
-    needs_enrichment = not (industry and industry.strip())
+    fit, tier, needs_enrichment = _score.score_role(
+        comp_k=comp_k, industry=industry, location=location, pursuit_mode=pursuit_mode)
 
     with cursor(db_path) as cur:
         cur.execute(
-            "UPDATE opportunities SET criteria_match_score=?, tier=?, needs_enrichment=? "
-            "WHERE id=?",
-            (fit, tier, 1 if needs_enrichment else 0, opp_id),
+            "UPDATE opportunities SET criteria_match_score=?, tier=?, "
+            "needs_enrichment=?, industry=? WHERE id=?",
+            (fit, tier, 1 if needs_enrichment else 0, industry, opp_id),
         )
 
     if needs_enrichment:
@@ -127,7 +118,7 @@ def enrich_opportunity(
 
     if tier in surface_tiers:
         parsed = {"title": row["title"], "company": row["company_normalized"],
-                  "location": location}
+                  "location": location, "industry": industry}
         _surface_opportunity(db_path, chat, opp_id, parsed, fit, tier, pursuit_mode)
         mark_application_drafted(db_path, opp_id)
         return EnrichResult(opp_id, "surfaced", tier, fit)

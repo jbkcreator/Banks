@@ -33,6 +33,9 @@ def db_path():
     ("base pay 150K–200K", 150.0),
     ("We have 500 employees, founded 2019", None),  # no comp context
     ("Salary range $90,000 to $110,000", 90.0),
+    ("Salary range $95,000", 95.0),                 # regression: was dropped
+    ("base 180000", 180.0),                          # bare thousands
+    ("base 150", 150.0),                             # bare 2-3 digit
 ])
 def test_extract_comp_k(text, expected):
     assert extract_comp_k(text) == expected

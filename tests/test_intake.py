@@ -126,6 +126,19 @@ def test_surface_attaches_warm_contact(db_path):
     assert name == "Meghan Overheim"   # warm contact attached to the opportunity
 
 
+def test_referral_path_surfaces_recruiter_by_vertical(db_path):
+    """No direct contact at the company, but a recruiter covers the vertical."""
+    from banks.warmpath import find_referral_paths
+    recruiter = [{"First Name": "Tabitha", "Last Name": "Francis", "Title": "Global Director",
+                  "Company": "LMRE", "Vertical Fit": "PropTech/Real Estate Tech",
+                  "LinkedIn URL": "https://li/tabitha", "Notes": "warm"}]
+    ingest_contacts(db_path, FakeCSVPort(recruiter), "x", parse_recruiter_row)
+
+    # cold company "Vibes", but role industry is PropTech -> recruiter is the avenue
+    paths = find_referral_paths(db_path, "Vibes", industry="PropTech")
+    assert any(p["path"] == "recruiter" and p["name"] == "Tabitha Francis" for p in paths)
+
+
 def test_no_warm_contact_still_surfaces(db_path):
     from banks.manual_intake import ingest_manual
     from banks.llmport import FakeLLMPort

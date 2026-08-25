@@ -60,7 +60,10 @@ Schema: `banks/store/schema.sql` (idempotent `CREATE TABLE IF NOT EXISTS`).
   $220k+. Unknown comp/vertical → 0.5 neutral.
 - `banks/exclusion.py` — company-only exclusion (former employees still
   contactable if moved on). Rent Solutions seeded.
-- `banks/clay_port.py` — Fake + Live. **Live is inert** (see Clay note).
+- `banks/contact_enrichment.py` — MOD-02 verified contact enrichment. Batch
+  `EnrichmentPort` (submit/retrieve): Fake, ManualCSV ($0 interim), LiveClay
+  (paid, inert until upgraded). Cold Tier A/B opportunity → `enrichment_queue`.
+  (The old `clay_port.py` was deleted — superseded by this.)
 
 ### Locked decisions (2026-08-25)
 - **Decision 4 (surface policy):** Simplify has no salary/industry → tiering is
@@ -73,10 +76,11 @@ Schema: `banks/store/schema.sql` (idempotent `CREATE TABLE IF NOT EXISTS`).
   notes/position — never a bare skip.
 - **Decision 6 (Clay is manual):** Clay's free tier blocks webhook + HTTP API +
   Google Sheets + own-key (all paywalled ≥$134/mo as of Clay's 2026 pricing).
-  `LiveClayPort` cannot call anything — the old `/v1/sources/enrichment` endpoint
-  returns 404 "deprecated". Path: Banks writes `needs_enrichment.csv`, Josh runs
-  it through Clay's UI (Import from CSV, ≤200 rows / 100 credits per month), drops
-  the enriched file back. Lean on emails already in the LinkedIn export first.
+  The old `/v1/sources/enrichment` endpoint returns 404 "deprecated" (verified).
+  Path: `ManualCSVEnrichmentPort` writes `needs_enrichment.csv`, Josh runs it
+  through Clay's UI (≤200 rows / 100 credits/mo), drops the enriched file back;
+  `LiveClayEnrichmentPort` (batch push+poll) is inert until a paid plan lands
+  (CLIENT_QUERIES_V2 item 5). Lean on LinkedIn-export emails first.
 
 ## Open blockers to going live (MOD-01/02)
 1. **`BANKS_ANTHROPIC_API_KEY` missing** — no real LLM (JD extraction, draft

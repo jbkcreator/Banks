@@ -81,6 +81,7 @@ def record_opportunity(
     source_url: str | None = None,
     contact_id: int | None = None,
     needs_enrichment: bool = False,
+    industry: str | None = None,
 ) -> int:
     """Insert an opportunity row. MOD-01 columns (tier, pursuit_mode,
     company_normalized, source_url, needs_enrichment) are keyword-only so
@@ -91,10 +92,11 @@ def record_opportunity(
         cur.execute(
             "INSERT INTO opportunities "
             "(title, source, criteria_match_score, status, tier, pursuit_mode, "
-            " company_normalized, source_url, contact_id, needs_enrichment) "
-            "VALUES (?, ?, ?, 'sourced', ?, ?, ?, ?, ?, ?)",
+            " company_normalized, source_url, contact_id, needs_enrichment, industry) "
+            "VALUES (?, ?, ?, 'sourced', ?, ?, ?, ?, ?, ?, ?)",
             (title, source, match_score, tier, pursuit_mode,
-             company_normalized, source_url, contact_id, 1 if needs_enrichment else 0),
+             company_normalized, source_url, contact_id,
+             1 if needs_enrichment else 0, industry),
         )
         return cur.lastrowid
 

@@ -190,7 +190,7 @@ def test_raw_http_client_isolated_to_the_sender():
     # All are live-adapter leaves — not agent logic.
     # enrich.py: LiveFetchPort reads job postings (read-only GET).
     # contact_enrichment.py: LiveClayEnrichmentPort (paid Clay, inert until upgraded).
-    allowed = {"mailer.py", "fileport.py", "llmport.py", "clay_port.py",
+    allowed = {"mailer.py", "fileport.py", "llmport.py",
                "enrich.py", "contact_enrichment.py"}
     offenders = []
     for path in _all_py_files(BANKS_PKG):
