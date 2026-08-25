@@ -37,3 +37,14 @@ def find_duplicate(db_path: str, source_url: str | None, title: str, company: st
         ):
             return row["id"]
     return None
+
+
+def find_duplicate_contact(db_path: str, linkedin_url: str) -> int | None:
+    """Return existing contact id if LinkedIn URL matches, else None."""
+    if not linkedin_url:
+        return None
+    with db.cursor(db_path) as cur:
+        row = cur.execute(
+            "SELECT id FROM contacts WHERE linkedin_url = ?", (linkedin_url,)
+        ).fetchone()
+    return row["id"] if row else None

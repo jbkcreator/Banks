@@ -222,6 +222,14 @@ CREATE TABLE IF NOT EXISTS suppression_list (
     added_at TEXT NOT NULL
 );
 
+-- Company exclusion list (MOD-06). Company-only — former employees contactable
+-- if they have since moved on. Checked against opportunity.company_normalized.
+CREATE TABLE IF NOT EXISTS company_exclusions (
+    company_normalized TEXT PRIMARY KEY,
+    reason TEXT,
+    added_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS touch_log (
     id INTEGER PRIMARY KEY,
     address TEXT NOT NULL,

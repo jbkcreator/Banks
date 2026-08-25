@@ -32,3 +32,21 @@ def classify_pursuit_mode(posting_text: str) -> str:
     if any(w in text for w in ("consulting", "project-based", "advisory")):
         return "consulting"
     return "full_time"
+
+
+# ---------------------------------------------------------------------------
+# Simplify status mapper (locked 2026-08-25)
+
+_SIMPLIFY_STATUS_MAP = {
+    "APPLIED": "applied",
+    "INTERVIEWING": "interviewing",
+    "OFFER": "interviewing",
+    "REJECTED": "closed",
+    "WITHDRAWN": "closed",
+    "ARCHIVED": "closed",
+}
+
+
+def map_simplify_status(status: str) -> str:
+    """Map Simplify status string to Banks internal status."""
+    return _SIMPLIFY_STATUS_MAP.get(status.upper(), "sourced")
