@@ -197,7 +197,9 @@ def test_record_and_summarise_funnel(db_path):
     record_funnel_event(db_path, opp_id, "applied")
     record_funnel_event(db_path, opp_id, "contacted")
     record_funnel_event(db_path, opp_id, "contacted")
-    summary = weekly_funnel_summary(db_path, "2026-08-25")
+    # events are stamped "now"; query the week that actually contains them
+    today = dt.date.today().isoformat()
+    summary = weekly_funnel_summary(db_path, today)
     assert summary.get("applied", 0) >= 1
     assert summary.get("contacted", 0) >= 2
 
@@ -240,14 +242,14 @@ def test_14day_spacing_recent_touch_blocked(db_path):
 def test_record_interview(db_path):
     opp_id = _opp(db_path)
     record_interview(db_path, opp_id)
-    summary = weekly_funnel_summary(db_path, "2026-08-25")
+    summary = weekly_funnel_summary(db_path, dt.date.today().isoformat())
     assert summary.get("interview", 0) >= 1
 
 
 def test_record_offer(db_path):
     opp_id = _opp(db_path)
     record_offer(db_path, opp_id)
-    summary = weekly_funnel_summary(db_path, "2026-08-25")
+    summary = weekly_funnel_summary(db_path, dt.date.today().isoformat())
     assert summary.get("offer", 0) >= 1
 
 
