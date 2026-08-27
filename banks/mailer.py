@@ -101,12 +101,16 @@ class SmtpMailer:
 
 
 def load_mailer(config=None):
-    """Pick the outbound mailer from config: SMTP if configured, else Resend,
-    else refuse. Relay calls this; the agent package must never import it."""
+    """The ONE mailer selector: SMTP if configured, else Resend, else refuse.
+
+    Both boot paths (Relay and Container.live) call this, so selection policy
+    lives in one place. Creds come from config (which funnels os.environ), not
+    read here directly — the hard-wall test guards one surface. The agent
+    package must never import this."""
     from .config import load_config
     cfg = config or load_config()
     if cfg.smtp_host and cfg.smtp_user and cfg.smtp_password:
         return SmtpMailer(cfg.smtp_host, cfg.smtp_port, cfg.smtp_user, cfg.smtp_password)
-    if os.environ.get("BANKS_RESEND_API_KEY"):
-        return ResendMailer()
+    if cfg.resend_api_key:
+        return ResendMailer(cfg.resend_api_key)
     raise RuntimeError("No outbound mailer configured (set BANKS_SMTP_* or BANKS_RESEND_API_KEY).")

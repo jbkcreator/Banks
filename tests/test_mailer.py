@@ -7,7 +7,7 @@ from unittest import mock
 import pytest
 
 from banks.config import load_config
-from banks.mailer import FakeMailer, SmtpMailer, load_mailer
+from banks.mailer import FakeMailer, ResendMailer, SmtpMailer, load_mailer
 
 
 def test_fake_mailer_records():
@@ -50,9 +50,16 @@ def test_load_mailer_prefers_smtp_when_configured():
     assert isinstance(load_mailer(cfg), SmtpMailer)
 
 
-def test_load_mailer_refuses_when_nothing_configured(monkeypatch):
-    monkeypatch.delenv("BANKS_RESEND_API_KEY", raising=False)
+def test_load_mailer_picks_resend_when_only_resend_key():
+    cfg = dataclasses.replace(
+        load_config(), smtp_host=None, smtp_user=None, smtp_password=None,
+        resend_api_key="re_test_key",
+    )
+    assert isinstance(load_mailer(cfg), ResendMailer)
+
+
+def test_load_mailer_refuses_when_nothing_configured():
     cfg = dataclasses.replace(load_config(), smtp_host=None, smtp_user=None,
-                              smtp_password=None)
+                              smtp_password=None, resend_api_key=None)
     with pytest.raises(RuntimeError, match="No outbound mailer configured"):
         load_mailer(cfg)

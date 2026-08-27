@@ -63,6 +63,10 @@ class BanksConfig:
     smtp_user: str | None = None
     smtp_password: str | None = None
     smtp_from: str | None = None
+    # Resend API key — the alternative outbound sender. Kept on config (not read
+    # from os.environ at the call site) so ALL creds funnel through here, which is
+    # what the hard-wall test guards.
+    resend_api_key: str | None = None
 
     @property
     def slack_ready(self) -> bool:
@@ -90,4 +94,5 @@ def load_config() -> BanksConfig:
         smtp_user=os.environ.get("BANKS_SMTP_USER"),
         smtp_password=os.environ.get("BANKS_SMTP_PASSWORD"),
         smtp_from=os.environ.get("BANKS_SMTP_FROM"),
+        resend_api_key=os.environ.get("BANKS_RESEND_API_KEY"),
     )
