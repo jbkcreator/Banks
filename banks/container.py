@@ -60,6 +60,13 @@ class Container:
         resolved_db = db_path or cfg.db_path
         init_db(resolved_db)
 
+        # MOD-06: seed the exclusion wall from its source-of-truth file at
+        # startup, so the DB the gates check always reflects exclusions.txt.
+        # Guarded: a missing file is fine (nothing to seed), never blocks boot.
+        if Path(cfg.exclusions_file).exists():
+            from .exclusion import load_exclusions_from_file
+            load_exclusions_from_file(resolved_db, cfg.exclusions_file)
+
         # Chat — required for Banks to function.
         if not cfg.slack_ready:
             raise ValueError(
