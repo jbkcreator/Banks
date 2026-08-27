@@ -12,10 +12,25 @@ PURSUIT_MODES = ("full_time", "contract_to_hire", "fractional", "consulting")
 
 
 def normalise_company(name: str) -> str:
-    """Lowercase + strip trailing legal suffixes."""
-    name = name.strip().lower()
+    """Lowercase, collapse internal whitespace, strip trailing legal suffixes.
+
+    Whitespace collapse closes an exclusion-evasion gap: "rent  solutions" (double
+    space) must resolve to the same slug as "rent solutions".
+    """
+    name = re.sub(r"\s+", " ", name.strip().lower())
     name = _LEGAL_SUFFIXES.sub("", name).strip().rstrip(",").strip()
     return name
+
+
+def normalise_name(name: str | None) -> str | None:
+    """Lowercase + collapse internal whitespace — stable key for person exclusion.
+
+    "Jane  Doe", "jane doe", " Jane Doe " all resolve to "jane doe".
+    """
+    if not name:
+        return None
+    slug = re.sub(r"\s+", " ", name.strip().lower())
+    return slug or None
 
 
 def classify_pursuit_mode(posting_text: str) -> str:

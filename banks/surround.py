@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 class SurroundPack:
     opportunity_id: int
     lanes: list[dict] = field(default_factory=list)
+    blocked: list[str] = field(default_factory=list)  # contacts skipped for exclusion (MOD-06)
 
 
 def generate_surround_pack(
@@ -52,6 +53,12 @@ def generate_surround_pack(
         draft_pov_brief,
         draft_recruiter_lane,
         draft_warm_intro_ask,
+    )
+    from .exclusion import (
+        is_company_excluded,
+        is_conduit_excluded,
+        is_contact_excluded,
+        is_indirectly_excluded,
     )
     from .flow import propose
     from .governance import is_company_frozen
@@ -82,6 +89,20 @@ def generate_surround_pack(
     if is_company_frozen(db_path, company):
         return SurroundPack(opportunity_id=opportunity_id, lanes=[])
 
+    # MOD-06 draft-time gate: an excluded company (direct or corporate-variant)
+    # produces no pack at all — defensive backstop to the intake gate.
+    if is_company_excluded(db_path, company) or is_indirectly_excluded(db_path, company):
+        return SurroundPack(opportunity_id=opportunity_id, lanes=[], blocked=[company])
+
+    blocked_contacts: list[str] = []
+
+    def _allowed(contact: dict) -> bool:
+        """Person-excluded, or a conduit at an excluded firm → drop the lane."""
+        if is_contact_excluded(db_path, contact) or is_conduit_excluded(db_path, contact):
+            blocked_contacts.append(contact.get("name") or f"contact {contact.get('id')}")
+            return False
+        return True
+
     # Build the spec list: (lane_type, contact_id, draft, channel)
     # Only lanes that have a real target are included.
     lane_specs: list[tuple[str, int | None, object, object]] = []
@@ -94,7 +115,8 @@ def generate_surround_pack(
         if pursuit_mode in ("fractional", "consulting"):
             draft = draft_consulting_lane(title, company, career_facts)
             lane_specs.append(("consulting", None, draft, SendChannel.INTERNAL))
-        return _build_pack(db_path, opportunity_id, title, lane_specs, chat, propose)
+        return _build_pack(db_path, opportunity_id, title, lane_specs, chat, propose,
+                           blocked=blocked_contacts)
 
     # Tier A: full surround pack
     warm_contacts: list[dict] = []
@@ -112,6 +134,10 @@ def generate_surround_pack(
             (company, contact_id or -1),
         ).fetchall()
         warm_contacts.extend(dict(r) for r in others)
+
+    # MOD-06 Q10: drop person-excluded contacts and conduits at excluded firms
+    # before any lane is built — the person/indirect gate lives in selection.
+    warm_contacts = [c for c in warm_contacts if _allowed(c)]
 
     primary = warm_contacts[0] if warm_contacts else None
 
@@ -165,7 +191,8 @@ def generate_surround_pack(
     draft = draft_pov_brief(title, company, jd_summary, career_facts, llm)
     lane_specs.append(("pov_brief", None, draft, SendChannel.INTERNAL))
 
-    pack = _build_pack(db_path, opportunity_id, title, lane_specs, chat, propose)
+    pack = _build_pack(db_path, opportunity_id, title, lane_specs, chat, propose,
+                       blocked=blocked_contacts)
 
     # Register warm-intro state machine rows after lanes are created
     if intro_contact_id is not None:
@@ -181,6 +208,7 @@ def _build_pack(
     lane_specs: list,
     chat: "ChatPort",
     propose_fn,
+    blocked: list | None = None,
 ) -> SurroundPack:
     """Phase 1: create all lane rows atomically. Phase 2: propose (Slack).
     Phase 3: set draft_refs atomically.
@@ -221,7 +249,9 @@ def _build_pack(
         {"lane_id": lid, "type": spec[0], "draft_ref": ref}
         for lid, spec, ref in zip(lane_ids, lane_specs, proposed_refs)
     ]
-    return SurroundPack(opportunity_id=opportunity_id, lanes=lanes_created)
+    return SurroundPack(
+        opportunity_id=opportunity_id, lanes=lanes_created, blocked=blocked or []
+    )
 
 
 def advance_warm_intro(

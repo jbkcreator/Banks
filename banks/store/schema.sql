@@ -434,3 +434,15 @@ CREATE TABLE IF NOT EXISTS daily_queue (
     root_ts TEXT,                         -- Slack ts of the summary header post
     posted_at TEXT NOT NULL
 );
+
+-- MOD-06: person exclusion, keyed on a STABLE identity (LinkedIn URL first,
+-- normalized name fallback) so an excluded person stays blocked across job/
+-- email changes. Distinct from suppression_list (raw address blocks): a person
+-- moving companies keeps their linkedin_url, so the block survives the move.
+CREATE TABLE IF NOT EXISTS person_exclusions (
+    id INTEGER PRIMARY KEY,
+    linkedin_url TEXT,
+    name_normalized TEXT,
+    reason TEXT,
+    added_at TEXT NOT NULL
+);

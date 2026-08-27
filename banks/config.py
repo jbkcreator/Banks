@@ -53,6 +53,9 @@ class BanksConfig:
     # Where drafts land when Slack isn't provisioned yet (T2 pending): a local
     # outbox so the whole pipeline is exercisable before the token exists.
     outbox_dir: str = "outbox"
+    # MOD-06 exclusion seed file — source of truth for who Banks must never
+    # contact. Loaded at startup; a Slack `exclude` command writes back here.
+    exclusions_file: str = "exclusions.txt"
 
     @property
     def slack_ready(self) -> bool:
@@ -74,4 +77,5 @@ def load_config() -> BanksConfig:
         anthropic_api_key=os.environ.get("BANKS_ANTHROPIC_API_KEY"),
         db_path=os.environ.get("BANKS_DB_PATH", "banks.db"),
         outbox_dir=os.environ.get("BANKS_OUTBOX_DIR", "outbox"),
+        exclusions_file=os.environ.get("BANKS_EXCLUSIONS_FILE", "exclusions.txt"),
     )
