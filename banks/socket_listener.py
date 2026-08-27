@@ -120,8 +120,10 @@ def _update_card(web, channel: str, ts: str, status_text: str,
 
 
 def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
-    """Dispatch a plain/thread message per classify_incoming precedence (Q23):
-    halt (handled by caller) → thread-reply revise → top-level command → ignore.
+    """Dispatch a message by the ONE precedence rule: classify_incoming decides
+    halt → revise → command → ignore, this function only acts on the verdict.
+    (Previously the precedence was re-derived inline here + in _on; now the pure
+    classifier is the single source of the rule and the live path exercises it.)
     """
     # Ignore the bot's own messages, or a revision loop is inevitable.
     if event.get("bot_id") or event.get("subtype"):
@@ -131,10 +133,19 @@ def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
     channel = event.get("channel")
     # A reply carries thread_ts (the parent = the card); a top-level message doesn't.
     parent_ts = event.get("thread_ts")
-
     ref = is_revision_context(cfg.db_path, parent_ts) if parent_ts else None
 
-    if ref is not None:
+    verdict = classify_incoming(text, ref is not None)
+
+    if verdict == "halt":
+        set_halt(reason=f"operator command: '{text.strip()}'")
+        web.chat_postMessage(
+            channel=cfg.slack_channel_id or "",
+            text="🛑 *Banks halted.* All jobs suspended. Restart to resume.",
+        )
+        return
+
+    if verdict == "revise":
         # Revise touches a draft → Josh-only (Q13).
         if not is_authorized(cfg, user_id):
             return
@@ -149,10 +160,11 @@ def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
             web.chat_postMessage(channel=channel, thread_ts=parent_ts, text=msg)
         return
 
-    if text.strip():  # top-level command (on-demand retrieval)
+    if verdict == "command":  # top-level on-demand retrieval
         reply = handle_command(cfg.db_path, route(cfg.db_path, text, llm))
         if channel and reply:
             web.chat_postMessage(channel=channel, text=reply)
+    # verdict == "ignore" → do nothing
 
 
 def run(cfg: BanksConfig | None = None) -> None:
@@ -181,15 +193,8 @@ def run(cfg: BanksConfig | None = None) -> None:
             event = (req.payload.get("event") or {})
             if event.get("type") != "message":
                 return
-            text = event.get("text") or ""
-            # Kill command (T3-14) always first — a shadowed kill switch is broken.
-            if is_halt_command(text):
-                set_halt(reason=f"operator command: '{text.strip()}'")
-                web.chat_postMessage(
-                    channel=cfg.slack_channel_id or "",
-                    text="🛑 *Banks halted.* All jobs suspended. Restart to resume.",
-                )
-                return
+            # Precedence (halt→revise→command→ignore) lives in _handle_message
+            # via classify_incoming — the one place the rule is defined.
             try:
                 _handle_message(cfg, web, llm, chat, event)
             except Exception as exc:
