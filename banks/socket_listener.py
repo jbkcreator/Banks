@@ -18,9 +18,15 @@ reaction fallback (banks.reactions poller) still catches approvals later.
 from __future__ import annotations
 
 from .approval import ButtonAction, apply_action
+from .attack_queue import (
+    QUEUE_ACTION_DONE,
+    QUEUE_ACTION_SKIP,
+    QUEUE_ACTION_SNOOZE,
+)
 from .commands import handle_command, route
 from .config import BanksConfig, load_config
 from .halt import is_halt_command, set_halt
+from .queue_actions import mark_done, skip_item, snooze_item
 from .revisions import apply_revision, classify_revision, is_revision_context
 
 
@@ -56,10 +62,7 @@ def _handle_action(cfg: BanksConfig, web, payload: dict) -> None:
     if not actions:
         return
     act = actions[0]
-    try:
-        button = ButtonAction(act.get("action_id"))
-    except ValueError:
-        return  # not one of ours
+    action_id = act.get("action_id")
     draft_ref = act.get("value")
     user_id = (payload.get("user") or {}).get("id", "")
     channel = (payload.get("channel") or {}).get("id")
@@ -69,24 +72,51 @@ def _handle_action(cfg: BanksConfig, web, payload: dict) -> None:
     if not is_authorized(cfg, user_id):
         return
 
+    # Queue-only actions (Q3/Q4): Skip / Snooze / Mark-done live in queue_actions,
+    # not approval.ButtonAction. Handle them before the ButtonAction parse.
+    if action_id in (QUEUE_ACTION_SKIP, QUEUE_ACTION_SNOOZE, QUEUE_ACTION_DONE):
+        status = _handle_queue_action(cfg, action_id, draft_ref)
+        if channel and ts:
+            _update_card(web, channel, ts, status, draft_ref, user_id)
+        return
+
+    try:
+        button = ButtonAction(action_id)
+    except ValueError:
+        return  # not one of ours
+
     # is_outbound is read from the draft's send_intent (R-D3), set at draft time
     # by propose(). Approve on an email:* intent enqueues Relay; none:internal
     # just acknowledges.
     result = apply_action(cfg.db_path, button, draft_ref, user_id)
 
     if channel and ts:
-        web.chat_update(
-            channel=channel,
-            ts=ts,
-            text=result.status_text,
-            blocks=[
-                {"type": "section",
-                 "text": {"type": "mrkdwn", "text": result.status_text}},
-                {"type": "context",
-                 "elements": [{"type": "mrkdwn",
-                               "text": f"draft_ref `{draft_ref}` · by <@{user_id}>"}]},
-            ],
-        )
+        _update_card(web, channel, ts, result.status_text, draft_ref, user_id)
+
+
+def _handle_queue_action(cfg: BanksConfig, action_id: str, draft_ref: str) -> str:
+    """Skip / Snooze / Mark-done (Q3/Q4) → queue_actions; returns status text."""
+    if action_id == QUEUE_ACTION_SKIP:
+        skip_item(cfg.db_path, draft_ref)
+        return "⏭️ *Skipped* — off today's queue (won't auto-return)."
+    if action_id == QUEUE_ACTION_SNOOZE:
+        snooze_item(cfg.db_path, draft_ref)  # default 1 day
+        return "😴 *Snoozed* — back in tomorrow's queue."
+    mark_done(cfg.db_path, draft_ref)
+    return "✔️ *Marked done* — logged as a completed touch."
+
+
+def _update_card(web, channel: str, ts: str, status_text: str,
+                 draft_ref: str, user_id: str) -> None:
+    web.chat_update(
+        channel=channel, ts=ts, text=status_text,
+        blocks=[
+            {"type": "section", "text": {"type": "mrkdwn", "text": status_text}},
+            {"type": "context",
+             "elements": [{"type": "mrkdwn",
+                           "text": f"draft_ref `{draft_ref}` · by <@{user_id}>"}]},
+        ],
+    )
 
 
 def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:

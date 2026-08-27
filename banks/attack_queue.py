@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 from datetime import datetime as dt, timezone
 from typing import TYPE_CHECKING
 
-from .approval import render_draft_blocks
 from .enforcement import Draft
 from .governance import (
     due_cadence_touches,
@@ -291,6 +290,49 @@ def _age_days(first_iso: str, today: str) -> int:
 # Render + post (thin layer over ChatPort)
 # ---------------------------------------------------------------------------
 
+# Attack-Queue card button set (Q3/Q4) — the client's named row, distinct from
+# the property-side Approve/Mark-sent/Reject/Revise in approval.render_draft_blocks.
+# Skip/Snooze/Mark-done are handled in socket_listener (not approval.ButtonAction).
+QUEUE_ACTION_SKIP = "banks_skip"
+QUEUE_ACTION_SNOOZE = "banks_snooze"
+QUEUE_ACTION_DONE = "banks_done"
+
+_QUEUE_BUTTONS = [
+    ("banks_approve", "✅ Approve", "primary"),
+    ("banks_revise", "✍️ Revise", None),
+    (QUEUE_ACTION_SKIP, "⏭️ Skip", None),
+    (QUEUE_ACTION_SNOOZE, "😴 Snooze", None),
+    (QUEUE_ACTION_DONE, "✔️ Mark done", None),
+]
+
+
+def render_queue_card_blocks(draft: "Draft", draft_ref: str) -> list[dict]:
+    """A queue card with the client's named button row (Approve / Revise / Skip /
+    Snooze / Mark done) — MOD-05 spec, vs the property card's four buttons.
+
+    Approve/Revise reuse the existing action_ids (approval.apply_action /
+    revisions); Skip/Snooze/Mark-done are the queue-only actions handled in the
+    listener via queue_actions.
+    """
+    header = f"[{draft.kind}] {draft.subject}"[:150]
+    elements = []
+    for action_id, label, style in _QUEUE_BUTTONS:
+        btn = {"type": "button", "action_id": action_id,
+               "text": {"type": "plain_text", "text": label}, "value": draft_ref}
+        if style:
+            btn["style"] = style
+        elements.append(btn)
+    return [
+        {"type": "header", "text": {"type": "plain_text", "text": header}},
+        {"type": "section",
+         "text": {"type": "mrkdwn",
+                  "text": f"{draft.body}\nIntended recipient (on your tap): {draft.to}"}},
+        {"type": "actions", "block_id": f"queue::{draft_ref}", "elements": elements},
+        {"type": "context",
+         "elements": [{"type": "mrkdwn", "text": f"draft_ref `{draft_ref}`"}]},
+    ]
+
+
 def render_summary_blocks(sections: list[Section], date_str: str) -> list[dict]:
     """Block Kit summary header — the day's shape in one scannable post."""
     blocks: list[dict] = [
@@ -356,7 +398,7 @@ def post_daily_queue(
                               subject=c.get("subject", ""), body=c.get("body", ""))
                 res = chat.post_blocks(
                     f"[DRAFT — {c['kind']}] {c['subject']}",
-                    render_draft_blocks(draft, ref),
+                    render_queue_card_blocks(draft, ref),
                     thread_ts=root_ts,
                 )
                 card_ts = res.get("ts")

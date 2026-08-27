@@ -177,3 +177,48 @@ def test_post_records_queue_items(db_path):
         ).fetchone()
     assert row["state"] == "active"
     assert row["card_ts"]
+
+
+# --- MOD-05 button-row gap closure: client's named Approve/Skip/Snooze/Done/Revise ---
+
+def test_queue_card_has_client_button_row():
+    from banks.attack_queue import render_queue_card_blocks
+    from banks.enforcement import Draft
+    blocks = render_queue_card_blocks(
+        Draft(kind="hiring_manager", to="x@y.com", subject="S", body="B"), "7"
+    )
+    actions = [b for b in blocks if b["type"] == "actions"][0]
+    ids = [e["action_id"] for e in actions["elements"]]
+    assert ids == ["banks_approve", "banks_revise", "banks_skip",
+                   "banks_snooze", "banks_done"]
+    assert all(e["value"] == "7" for e in actions["elements"])
+
+
+def test_queue_action_dispatch(db_path):
+    """Skip / Snooze / Mark-done route to queue_actions and set queue_items state."""
+    from banks.socket_listener import _handle_queue_action
+    from banks.attack_queue import (
+        QUEUE_ACTION_SKIP, QUEUE_ACTION_SNOOZE, QUEUE_ACTION_DONE,
+    )
+    import dataclasses
+    from banks.config import load_config
+    cfg = dataclasses.replace(load_config(), db_path=db_path)
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    for ref, action in (("10", QUEUE_ACTION_SKIP),
+                        ("11", QUEUE_ACTION_SNOOZE),
+                        ("12", QUEUE_ACTION_DONE)):
+        with cursor(db_path) as cur:
+            cur.execute(
+                "INSERT INTO queue_items (draft_ref, category, state, "
+                "first_surfaced_at, last_surfaced_at) VALUES (?,?, 'active', ?, ?)",
+                (ref, "tier_a", now, now),
+            )
+        msg = _handle_queue_action(cfg, action, ref)
+        assert isinstance(msg, str) and msg
+    with cursor(db_path) as cur:
+        states = dict(cur.execute(
+            "SELECT draft_ref, state FROM queue_items WHERE draft_ref IN ('10','11','12')"
+        ).fetchall())
+    assert states["10"] == "skipped"
+    assert states["11"] == "snoozed"
+    assert states["12"] == "done"
