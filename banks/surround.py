@@ -112,7 +112,7 @@ def generate_surround_pack(
             draft = draft_consulting_lane(title, company, career_facts)
             lane_specs.append(("consulting", None, draft, SendChannel.INTERNAL))
         return _build_pack(db_path, opportunity_id, title, lane_specs, chat, propose,
-                           blocked=blocked_contacts)
+                           blocked=blocked_contacts, company=company)
 
     # Tier A: full surround pack
     warm_contacts: list[dict] = []
@@ -188,7 +188,7 @@ def generate_surround_pack(
     lane_specs.append(("pov_brief", None, draft, SendChannel.INTERNAL))
 
     pack = _build_pack(db_path, opportunity_id, title, lane_specs, chat, propose,
-                       blocked=blocked_contacts)
+                       blocked=blocked_contacts, company=company)
 
     # Register warm-intro state machine rows after lanes are created
     if intro_contact_id is not None:
@@ -205,11 +205,19 @@ def _build_pack(
     chat: "ChatPort",
     propose_fn,
     blocked: list | None = None,
+    company: str | None = None,
 ) -> SurroundPack:
     """Phase 1: create all lane rows atomically. Phase 2: propose (Slack).
     Phase 3: set draft_refs atomically.
+
+    Each propose passes company + the lane's contact so `flow.propose` — the
+    every-draft chokepoint — enforces the exclusion wall live (MOD-06). The
+    up-front contact filter in the caller is the primary gate; this makes the
+    chokepoint a real backstop that fires on every outreach draft rather than
+    dead code. A DraftExcluded here (a pre-filter miss) skips that lane.
     """
-    from .store import transaction
+    from .exclusion import DraftExcluded
+    from .store import cursor, transaction
 
     now = datetime.now(timezone.utc).isoformat()
 
@@ -225,28 +233,41 @@ def _build_pack(
             )
             lane_ids.append(cur.lastrowid)
 
-    # Phase 2 — propose each lane (Slack posts; intentionally outside transaction)
-    proposed_refs: list[str] = []
-    for lane_id, (lane_type, _cid, draft, channel) in zip(lane_ids, lane_specs):
-        proposed = propose_fn(
-            db_path, _packet(title, lane_type), draft, chat, send_channel=channel
-        )
-        proposed_refs.append(str(proposed.ref))
+    # Phase 2 — propose each lane (Slack posts; intentionally outside transaction).
+    # Keep only (lane_id, ref) for lanes that actually posted, so a skipped lane
+    # doesn't misalign Phase 3.
+    proposed: list[tuple[int, str, str]] = []  # (lane_id, ref, lane_type)
+    blocked = list(blocked or [])
+    for lane_id, (lane_type, cid, draft, channel) in zip(lane_ids, lane_specs):
+        contact = None
+        if cid:
+            with cursor(db_path) as cur:
+                row = cur.execute("SELECT * FROM contacts WHERE id = ?", (cid,)).fetchone()
+                contact = dict(row) if row else None
+        try:
+            p = propose_fn(
+                db_path, _packet(title, lane_type), draft, chat,
+                send_channel=channel, company=company, contact=contact,
+            )
+        except DraftExcluded as exc:
+            blocked.append(f"{lane_type}: {exc}")
+            continue
+        proposed.append((lane_id, str(p.ref), lane_type))
 
-    # Phase 3 — set all draft_refs in one transaction
+    # Phase 3 — set draft_refs for the lanes that posted, in one transaction
     with transaction(db_path) as cur:
-        for lane_id, ref in zip(lane_ids, proposed_refs):
+        for lane_id, ref, _lt in proposed:
             cur.execute(
                 "UPDATE outreach_lanes SET draft_ref = ? WHERE id = ?",
                 (ref, lane_id),
             )
 
     lanes_created = [
-        {"lane_id": lid, "type": spec[0], "draft_ref": ref}
-        for lid, spec, ref in zip(lane_ids, lane_specs, proposed_refs)
+        {"lane_id": lid, "type": lt, "draft_ref": ref}
+        for lid, ref, lt in proposed
     ]
     return SurroundPack(
-        opportunity_id=opportunity_id, lanes=lanes_created, blocked=blocked or []
+        opportunity_id=opportunity_id, lanes=lanes_created, blocked=blocked
     )
 
 
