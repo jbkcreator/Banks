@@ -1,0 +1,96 @@
+# Banks — Slack App Manifest
+#
+# Paste into: api.slack.com/apps → Create New App → "From an app manifest"
+# → pick Josh's workspace → paste this YAML.
+#
+# After creation:
+#   1. Basic Information → App-Level Tokens → Generate a token with scope
+#      `connections:write`. This is the xapp- token → BANKS_SLACK_APP_TOKEN.
+#   2. Install App → Install to Workspace. This generates the xoxb- bot token
+#      → BANKS_SLACK_BOT_TOKEN.
+#   3. Create channel #banks-jobs, then: /invite @Banks
+#      Put its channel ID in BANKS_JOBS_CHANNEL_ID.
+#
+# Hard wall: this is a NEW app named "Banks", separate from FA's "Cora
+# Approvals". Never reuse the Cora Approvals tokens here.
+#
+# ---------------------------------------------------------------------------
+# WHERE EACH SETTING LIVES IN THE SLACK DASHBOARD (api.slack.com/apps → Banks)
+# The manifest sets all of these in one paste; this map is for verifying /
+# editing them by hand afterwards.
+#
+#   display_information.name / description / background_color
+#       → left sidebar: "Basic Information" → "Display Information"
+#
+#   features.bot_user (display_name, always_online)
+#       → left sidebar: "App Home" → "Your App's Presence in Slack"
+#
+#   oauth_config.scopes.bot  (all the chat:write / channels:history / etc.)
+#       → left sidebar: "OAuth & Permissions" → "Scopes" → "Bot Token Scopes"
+#
+#   settings.socket_mode_enabled
+#       → left sidebar: "Socket Mode" → toggle "Enable Socket Mode"
+#         (this is the org-policy blocker; admin may need to allow it)
+#
+#   settings.interactivity.is_enabled
+#       → left sidebar: "Interactivity & Shortcuts" → toggle at top
+#         (with Socket Mode on, NO Request URL field is required)
+#
+#   settings.event_subscriptions.bot_events
+#       → left sidebar: "Event Subscriptions" → toggle "Enable Events"
+#         → expand "Subscribe to bot events" → the message.channels etc. list
+#
+#   settings.org_deploy_enabled
+#       → left sidebar: "Manage Distribution" / "Org Level Apps"
+#         (false = single-workspace install only)
+#
+#   settings.token_rotation_enabled
+#       → left sidebar: "OAuth & Permissions" → "Advanced Token Security
+#         via Token Rotation"  (false = token does not auto-expire)
+#
+# TOKENS (generated after the app exists — not part of the manifest):
+#   xapp- app-level token
+#       → left sidebar: "Basic Information" → "App-Level Tokens"
+#         → "Generate Token and Scopes" → add scope connections:write
+#   xoxb- bot token
+#       → left sidebar: "OAuth & Permissions" → "OAuth Tokens for Your
+#         Workspace" → "Install to Workspace" (appears after install)
+# ---------------------------------------------------------------------------
+
+display_information:
+  name: Banks
+  description: Josh's job-search cockpit — Daily Attack Queue, draft approvals, warm-path lookups. Drafts only; never sends without approval.
+  background_color: "#1a1a2e"
+
+features:
+  bot_user:
+    display_name: Banks
+    always_online: true
+
+oauth_config:
+  scopes:
+    bot:
+      - chat:write            # post the Daily Attack Queue + draft cards
+      - chat:write.customize  # post as "Banks" with custom name/icon
+      - channels:read         # resolve / verify #banks-jobs
+      - channels:history      # read thread replies (NL revisions) + on-demand commands (public)
+      - groups:history        # same, if #banks-jobs is private
+      - reactions:read        # emoji-reaction approval fallback (✅/📤/❌)
+      - reactions:write       # Banks acknowledges with a reaction
+      - users:read            # map reacting/clicking user id → Josh (authorization)
+
+settings:
+  # Socket Mode: no public server needed. Requires the app-level token above.
+  socket_mode_enabled: true
+  interactivity:
+    # Button clicks (Approve / Skip / Snooze / Mark done / Reject / Revise)
+    # ride Socket Mode — no Request URL required.
+    is_enabled: true
+  event_subscriptions:
+    bot_events:
+      - message.channels   # thread-reply NL revisions + plain-message commands (public)
+      - message.groups     # same, if #banks-jobs is private
+      - reaction_added     # emoji-reaction approvals (fallback)
+      - app_mention        # optional: @Banks addressing
+  org_deploy_enabled: false
+  token_rotation_enabled: false

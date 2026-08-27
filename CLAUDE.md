@@ -27,18 +27,50 @@ and no connection string means the FA wall is *physical*. No DB server needed.
 `db.cursor()` for one read/write; `db.transaction()` for atomic multi-row writes.
 Schema: `banks/store/schema.sql` (idempotent `CREATE TABLE IF NOT EXISTS`).
 
+## What the client wants (the whole build as a user story)
+
+Josh Kantor is a senior GTM exec (VP Sales / CRO) hunting his next role
+(full-time / contract-to-hire / fractional / consulting). LoopCV & Simplify
+already create application **volume**; Banks owns the **intelligence,
+relationship, and multi-channel surround layer after** the application. The
+application alone rarely gets a reply — interviews come from the *surround*:
+reaching the real hiring manager, a warm intro through his own network, the
+right recruiter, follow-ups on the right day, never letting a live conversation
+go cold or double-contacting a company.
+
+- **MOD-01 — "make sense of my raw application flow":** pull in Simplify/LoopCV
+  exports, a pasted URL, or "I applied here"; dedupe; Tier A/B/C; pursuit mode.
+- **MOD-02 — "find the actual human + who can introduce me":** real req owner
+  (not HR), verified email or LinkedIn fallback, and who he already knows there.
+- **MOD-03 — "surround it, in my voice, honestly":** on a Tier A, the whole
+  coordinated pack at once (hiring-manager / LinkedIn / recruiter / warm-intro /
+  employee), POV briefs, no-role & consulting pitches. Facts ONLY from
+  career-facts — never invent.
+- **MOD-04 — "chase properly, never look desperate":** Day 3/7/14 then stop;
+  instant reply-stop; freeze a company when a conversation opens; rate caps
+  (20 LinkedIn, 40 email/day, 14-day spacing); funnel tracking.
+- **MOD-05 — "run my day from Slack, one tap":** morning Daily Attack Queue;
+  Approve/Skip/Snooze + mark manual done; threaded NL revisions ("shorter");
+  on-demand lookups ("who do I know at X", company status, call list).
+- **MOD-06 — "never contact the wrong people, then go live":** adversarial
+  exclusion at draft + send time; full mock run; ship to his private GitHub.
+
+**The spine through all six:** Banks *prepares and proposes*; Josh *decides and
+approves*. Nothing is ever sent/posted/submitted/paid without his one-tap
+approval. No autonomous sends, no standing orders.
+
 ## Maximum Distribution Build — module status
 
 | Module | Scope | Status |
 |---|---|---|
 | MOD-01 | Application intake, dedup, fit scoring, tiering | **Build-complete, e2e-tested, live** |
 | MOD-02 | Contact resolution, enrichment, warm-path graph | **Build-complete, e2e-tested; Clay enrichment needs paid plan** |
-| MOD-03 | 7 distribution lanes & surround workflow | **Build-complete, code-reviewed, 358 tests green** |
-| MOD-04 | Follow-up cadence, governance, collision ledger | **Build-complete, code-reviewed, 358 tests green** |
-| MOD-05 | Slack command & control (Daily Attack Queue) | Not started — needs dedicated Banks Slack app |
+| MOD-03 | 7 distribution lanes & surround workflow | **Build-complete, code-reviewed, 400 tests green** |
+| MOD-04 | Follow-up cadence, governance, collision ledger | **Build-complete, code-reviewed, 400 tests green** |
+| MOD-05 | Slack command & control (Daily Attack Queue) | **Build-complete; Approve/Mark-sent/Reject proven LIVE in test ws; revisions+commands wired (need Event Subscriptions on the app). GAP: card button row still Approve/Mark-sent/Reject/Revise, not the client's named Approve/Skip/Snooze — rendering fix, logic exists in queue_actions.py** |
 | MOD-06 | Adversarial exclusion & launch staging | Not started — needs Josh's full exclusion list |
 
-### MOD-01/02 key modules (all unit-tested, 358 tests green)
+### MOD-01/02 key modules (all unit-tested; 400 tests green across the suite)
 - `banks/intake.py` — the orchestration seam. `ingest_simplify()` runs
   parse→exclude→dedup→normalise→classify→score→tier→record; `ingest_contacts()`
   loads + merges the contact graph; `export_enrichment_queue()` writes the manual
@@ -71,6 +103,29 @@ Schema: `banks/store/schema.sql` (idempotent `CREATE TABLE IF NOT EXISTS`).
 - `banks/governance.py` — Daily caps (email 40, LinkedIn 20, overflow-safe); `got_reply()` atomically freezes company + cadence; `queue_cadence()` Day 3/7/14 keyed off `outreach_lanes.sent_at`; `due_cadence_touches()` stops on interviewing/closed; `network_activation_due()`; `weekly_funnel_summary()`; `check_14day_spacing()` by contact_id.
 - Schema additions: `outreach_lanes`, `warm_intros`, `cadence_queue`, `governance_ledger`, `company_freeze`, `funnel_events`.
 
+### MOD-05 key modules (build-complete; full grill in docs/BUILD_DECISIONS_MOD03-06.md)
+- `banks/attack_queue.py` — pure `build_sections()` (failure-mode-first order,
+  empty-omit, career-facts blocker line, score ranking, imported digest, funnel
+  footer) + `post_daily_queue()` (exactly-once via `daily_queue` date-claim;
+  cards threaded under a summary root; carried-over items re-posted live).
+- `banks/queue_actions.py` — `snooze_item` / `skip_item` / `mark_done`
+  (MARK_SENT semantics → touch_log + cadence + funnel). NOTE: these are the
+  Skip/Snooze the client's spec names as card BUTTONS; logic done, button row
+  not yet rendered on the card.
+- `banks/commands.py` — hybrid intent router (keyword fast-path → LLM
+  `extract_json` fallback), `handle_command` (whoat / status snapshot /
+  calllist / help), `RateLimiter`.
+- `banks/revisions.py` — `is_revision_context` (card_ts→draft_ref),
+  `classify_revision`, `apply_revision` (facts-only prompt + embellishment
+  post-check → `redraft` in place).
+- `banks/socket_listener.py` — live loop wires buttons (interactive) AND now
+  message events: precedence halt → thread-revise → command → ignore
+  (`classify_incoming`); single-approver lock via `is_authorized`. Message
+  dispatch needs the Slack app's **Event Subscriptions** (`message.channels`).
+- Schema additions: `queue_items` (+`card_ts`), `daily_queue`.
+- Live proof: `scripts/mod05_smoke_test.py` posts a real queue to the TEST ws;
+  Approve/Mark-sent/Reject verified live end-to-end (DB state confirmed).
+
 ### Locked decisions (2026-08-25)
 - **Decision 4 (surface policy):** Simplify has no salary/industry → tiering is
   half-blind → rows recorded with `needs_enrichment=1` and **NOT surfaced** to
@@ -99,7 +154,7 @@ Schema: `banks/store/schema.sql` (idempotent `CREATE TABLE IF NOT EXISTS`).
 _Deferred (not blocking):_ Hetzner production server (24/7 deploy, MOD-06); LoopCV export (Simplify-only at launch).
 
 ## Testing
-`python -m pytest tests/ -q` — **358 passing**. Every new external adapter must be
+`python -m pytest tests/ -q` — **400 passing**. Every new external adapter must be
 added to `test_hardwall.py`'s allowlist and prove no FA imports.
 
 ## Git

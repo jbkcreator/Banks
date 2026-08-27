@@ -18,8 +18,10 @@ reaction fallback (banks.reactions poller) still catches approvals later.
 from __future__ import annotations
 
 from .approval import ButtonAction, apply_action
+from .commands import handle_command, route
 from .config import BanksConfig, load_config
 from .halt import is_halt_command, set_halt
+from .revisions import apply_revision, classify_revision, is_revision_context
 
 
 def is_authorized(cfg: BanksConfig, user_id: str) -> bool:
@@ -87,11 +89,50 @@ def _handle_action(cfg: BanksConfig, web, payload: dict) -> None:
         )
 
 
+def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
+    """Dispatch a plain/thread message per classify_incoming precedence (Q23):
+    halt (handled by caller) → thread-reply revise → top-level command → ignore.
+    """
+    # Ignore the bot's own messages, or a revision loop is inevitable.
+    if event.get("bot_id") or event.get("subtype"):
+        return
+    text = event.get("text") or ""
+    user_id = event.get("user", "")
+    channel = event.get("channel")
+    # A reply carries thread_ts (the parent = the card); a top-level message doesn't.
+    parent_ts = event.get("thread_ts")
+
+    ref = is_revision_context(cfg.db_path, parent_ts) if parent_ts else None
+
+    if ref is not None:
+        # Revise touches a draft → Josh-only (Q13).
+        if not is_authorized(cfg, user_id):
+            return
+        intent, instruction = classify_revision(text, llm)
+        if intent != "revise":
+            return  # silent on questions / chatter in a draft thread
+        from .opportunity import CareerFacts
+        res = apply_revision(cfg.db_path, ref, instruction, CareerFacts(), llm, chat)
+        msg = ("✍️ Revised in place." if res.get("ok")
+               else f"✍️ Couldn't revise: {res.get('reason')}")
+        if channel:
+            web.chat_postMessage(channel=channel, thread_ts=parent_ts, text=msg)
+        return
+
+    if text.strip():  # top-level command (on-demand retrieval)
+        reply = handle_command(cfg.db_path, route(cfg.db_path, text, llm))
+        if channel and reply:
+            web.chat_postMessage(channel=channel, text=reply)
+
+
 def run(cfg: BanksConfig | None = None) -> None:
     from slack_sdk.socket_mode import SocketModeClient
     from slack_sdk.socket_mode.request import SocketModeRequest
     from slack_sdk.socket_mode.response import SocketModeResponse
     from slack_sdk.web import WebClient
+
+    from .chatport import LiveChatPort
+    from .llmport import load_llm_port
 
     cfg = cfg or load_config()
     if not (cfg.slack_bot_token and cfg.slack_app_token):
@@ -99,15 +140,19 @@ def run(cfg: BanksConfig | None = None) -> None:
 
     web = WebClient(token=cfg.slack_bot_token)
     sm = SocketModeClient(app_token=cfg.slack_app_token, web_client=web)
+    llm = load_llm_port()
+    chat = LiveChatPort(cfg)
 
     def _on(client: SocketModeClient, req: SocketModeRequest) -> None:
         # Ack first (Slack requires a prompt ack), then act.
         client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
 
-        # Kill command (T3-14): handle plain messages before button dispatch.
         if req.type == "events_api":
             event = (req.payload.get("event") or {})
+            if event.get("type") != "message":
+                return
             text = event.get("text") or ""
+            # Kill command (T3-14) always first — a shadowed kill switch is broken.
             if is_halt_command(text):
                 set_halt(reason=f"operator command: '{text.strip()}'")
                 web.chat_postMessage(
@@ -115,6 +160,11 @@ def run(cfg: BanksConfig | None = None) -> None:
                     text="🛑 *Banks halted.* All jobs suspended. Restart to resume.",
                 )
                 return
+            try:
+                _handle_message(cfg, web, llm, chat, event)
+            except Exception as exc:
+                print(f"[listener] message error: {exc!r}", flush=True)
+            return
 
         if req.type == "interactive":
             try:
