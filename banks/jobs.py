@@ -54,6 +54,13 @@ def run_job(name: str, db_path: str, chat: ChatPort) -> dict | None:
     if name == "weekly_scorecard":
         log_event(db_path, "scorecard_posted", meta={"job": "weekly_scorecard"})
         return chat.post_blocks("Banks — Weekly Scorecard", _weekly_scorecard_blocks(db_path))
+    if name == "daily_attack_queue":
+        # MOD-05 cockpit. Idempotent per date (post_daily_queue claims the day),
+        # so the self-heal retry wrapper can re-fire without double-posting.
+        from .attack_queue import post_daily_queue
+        from .opportunity import CareerFacts
+        log_event(db_path, "draft_created", meta={"job": "daily_attack_queue"}, minutes_saved=0)
+        return post_daily_queue(db_path, chat, career_facts=CareerFacts())
     if name == "nightly_reflection":
         from .reflection import run_reflection
         return run_reflection(db_path, chat)

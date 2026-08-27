@@ -23,6 +23,8 @@ class StandingJob:
 
 STANDING_JOBS = [
     StandingJob("morning_dashboard", "daily", fire_time=time(7, 30)),
+    # MOD-05 Daily Attack Queue — job-search cockpit, same 7:30 ET slot, own post.
+    StandingJob("daily_attack_queue", "daily", fire_time=time(7, 30)),
     StandingJob("nightly_reflection", "daily", fire_time=time(23, 0)),
     StandingJob("weekly_scorecard", "weekly", fire_time=time(17, 0), weekday=4),  # Friday
     StandingJob("quarterly_rate_optimizer", "quarterly"),

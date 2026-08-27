@@ -21,8 +21,10 @@ from .slack import WrongChannel
 
 
 class ChatPort(Protocol):
-    def post_draft(self, draft: Draft, draft_ref: str) -> dict: ...
-    def post_blocks(self, text: str, blocks: list[dict]) -> dict: ...
+    def post_draft(self, draft: Draft, draft_ref: str,
+                   thread_ts: str | None = None) -> dict: ...
+    def post_blocks(self, text: str, blocks: list[dict],
+                    thread_ts: str | None = None) -> dict: ...
     def update(self, ts: str, text: str, blocks: list[dict]) -> dict: ...
 
 
@@ -34,17 +36,21 @@ class FakeChatPort:
         self.updates: list[dict] = []
         self._ts = 0
 
-    def post_draft(self, draft: Draft, draft_ref: str) -> dict:
+    def post_draft(self, draft: Draft, draft_ref: str,
+                   thread_ts: str | None = None) -> dict:
         assert_egress_allowed(Egress.POST_DRAFT_TO_BANKS_CHANNEL)
         return self.post_blocks(
             f"[DRAFT — {draft.kind}] {draft.subject}",
             render_draft_blocks(draft, draft_ref),
+            thread_ts=thread_ts,
         )
 
-    def post_blocks(self, text: str, blocks: list[dict]) -> dict:
+    def post_blocks(self, text: str, blocks: list[dict],
+                    thread_ts: str | None = None) -> dict:
         self._ts += 1
         ts = f"{self._ts:.6f}"
-        self.posts.append({"ts": ts, "text": text, "blocks": blocks})
+        self.posts.append({"ts": ts, "text": text, "blocks": blocks,
+                           "thread_ts": thread_ts})
         return {"ok": True, "ts": ts}
 
     def update(self, ts: str, text: str, blocks: list[dict]) -> dict:
@@ -62,20 +68,26 @@ class LiveChatPort:
         from slack_sdk.web import WebClient
         return WebClient(token=self.config.slack_bot_token)
 
-    def post_draft(self, draft: Draft, draft_ref: str) -> dict:
+    def post_draft(self, draft: Draft, draft_ref: str,
+                   thread_ts: str | None = None) -> dict:
         assert_egress_allowed(Egress.POST_DRAFT_TO_BANKS_CHANNEL)
         return self.post_blocks(
             f"[DRAFT — {draft.kind}] {draft.subject}",
             render_draft_blocks(draft, draft_ref),
+            thread_ts=thread_ts,
         )
 
-    def post_blocks(self, text: str, blocks: list[dict]) -> dict:
+    def post_blocks(self, text: str, blocks: list[dict],
+                    thread_ts: str | None = None) -> dict:
         # Gate: drafts-only egress. Posting to #banks is the one sanctioned act.
         assert_egress_allowed(Egress.POST_DRAFT_TO_BANKS_CHANNEL)
         channel = self.config.slack_channel_id
         if not channel:
             raise WrongChannel("No #banks channel configured; refusing to post.")
-        resp = self._client().chat_postMessage(channel=channel, text=text, blocks=blocks)
+        kwargs = {"channel": channel, "text": text, "blocks": blocks}
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        resp = self._client().chat_postMessage(**kwargs)
         return {"ok": bool(resp.get("ok")), "ts": resp.get("ts"), "channel": channel}
 
     def update(self, ts: str, text: str, blocks: list[dict]) -> dict:

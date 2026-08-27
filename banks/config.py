@@ -34,6 +34,10 @@ class BanksConfig:
     # App-level token (xapp-) for Socket Mode — receives button clicks over an
     # outbound WebSocket, no public endpoint. Distinct from the bot token.
     slack_app_token: str | None = None
+    # Single-approver lock (MOD-05): only this Slack user id may drive actions
+    # (Approve triggers a real Relay send — that authority is Josh's alone).
+    # None = allow any user (test workspaces, where Lesly is the only member).
+    approver_user_id: str | None = None
     timezone: str = "America/New_York"
     # Josh's own address — where detailed-financial drafts are emailed in full
     # (Slack only ever carries the redacted summary).
@@ -61,6 +65,7 @@ def load_config() -> BanksConfig:
         slack_channel_id=os.environ.get("BANKS_CHANNEL_ID"),
         slack_jobs_channel_id=os.environ.get("BANKS_JOBS_CHANNEL_ID", "C0BNGMYHFEF"),
         slack_app_token=os.environ.get("BANKS_SLACK_APP_TOKEN"),
+        approver_user_id=os.environ.get("BANKS_APPROVER_USER_ID"),
         josh_email=os.environ.get("BANKS_JOSH_EMAIL"),
         gcp_sa_key=os.environ.get("BANKS_GCP_SA_KEY"),
         calendar_id=os.environ.get("BANKS_CALENDAR_ID"),

@@ -409,3 +409,28 @@ CREATE TABLE IF NOT EXISTS funnel_events (
     event_type TEXT NOT NULL,  -- applied | contacted | replied | intro_made | interview | offer
     ts TEXT NOT NULL
 );
+
+-- MOD-05: per-item queue view-state (snooze/skip/aging), separate from the
+-- decision/send lifecycle in decision_packets. The Daily Attack Queue renders
+-- and tracks its own view-state; it does not recompute pipeline state.
+-- first_surfaced_at drives aging (carried-over = active with an earlier date).
+CREATE TABLE IF NOT EXISTS queue_items (
+    id INTEGER PRIMARY KEY,
+    draft_ref TEXT,                       -- live card's DraftRef (nullable for info rows)
+    category TEXT NOT NULL,               -- carried_over|active_convo|tier_a|tier_b|follow_up|relationship|imported|funnel
+    opportunity_id INTEGER,
+    state TEXT NOT NULL DEFAULT 'active', -- active | snoozed | skipped | done
+    snooze_until TEXT,                    -- ISO date; re-include when snooze_until <= today
+    first_surfaced_at TEXT NOT NULL,      -- set once (INSERT OR IGNORE) — drives aging
+    last_surfaced_at TEXT NOT NULL,
+    card_ts TEXT,                         -- Slack ts of the card message → revision-thread mapping
+    UNIQUE(draft_ref)
+);
+
+-- MOD-05: one queue root per date — exactly-once posting under self-heal retry.
+-- Same idempotency discipline as Relay sent_receipts: a duplicate fire is a no-op.
+CREATE TABLE IF NOT EXISTS daily_queue (
+    date TEXT PRIMARY KEY,                -- ISO date
+    root_ts TEXT,                         -- Slack ts of the summary header post
+    posted_at TEXT NOT NULL
+);
