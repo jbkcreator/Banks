@@ -125,10 +125,11 @@ def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
     (Previously the precedence was re-derived inline here + in _on; now the pure
     classifier is the single source of the rule and the live path exercises it.)
     """
-    # Ignore the bot's own messages, or a revision loop is inevitable.
-    if event.get("bot_id") or event.get("subtype"):
-        return
-    text = event.get("text") or ""
+    # Text can arrive top-level OR, for an EDITED message, under `message`
+    # (subtype 'message_changed'). The kill switch must see both — a halt typed
+    # as an edit is still a halt (a shadowed kill switch is a broken one).
+    is_bot = bool(event.get("bot_id"))
+    text = event.get("text") or (event.get("message") or {}).get("text") or ""
     user_id = event.get("user", "")
     channel = event.get("channel")
     # A reply carries thread_ts (the parent = the card); a top-level message doesn't.
@@ -137,12 +138,21 @@ def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
 
     verdict = classify_incoming(text, ref is not None)
 
+    # HALT FIRST, on the broadest surface — any human message including edits.
+    # (Skip the bot's own messages so a halt-confirmation can't re-trigger halt.)
     if verdict == "halt":
+        if is_bot:
+            return
         set_halt(reason=f"operator command: '{text.strip()}'")
         web.chat_postMessage(
             channel=cfg.slack_channel_id or "",
             text="🛑 *Banks halted.* All jobs suspended. Restart to resume.",
         )
+        return
+
+    # Non-halt verdicts ignore the bot's own messages + non-plain subtypes
+    # (edits, joins, etc.) — a revision loop otherwise is inevitable.
+    if is_bot or event.get("subtype"):
         return
 
     if verdict == "revise":
