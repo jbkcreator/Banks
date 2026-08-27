@@ -22,6 +22,10 @@ from .normalise import normalise_company, normalise_name
 from .store import cursor
 
 
+class DraftExcluded(RuntimeError):
+    """Raised when a draft's target is on the exclusion wall. Carries the reason."""
+
+
 def add_company_exclusion(db_path: str, company: str, reason: str | None = None) -> None:
     """Add (or update) a company on the exclusion list. Idempotent by slug."""
     slug = normalise_company(company)
@@ -141,6 +145,33 @@ def is_contact_excluded(db_path: str, contact: dict) -> bool:
     return is_person_excluded(
         db_path, linkedin_url=contact.get("linkedin_url"), name=contact.get("name")
     )
+
+
+# --- The one gate: all kinds in a single predicate --------------------------
+
+def is_target_excluded(
+    db_path: str, *, company: str | None = None, contact: dict | None = None,
+) -> tuple[bool, str | None]:
+    """The single exclusion predicate — every kind, one place. Returns
+    (excluded, reason). All three gates (intake early-skip, flow.propose
+    every-draft chokepoint, relay send-time backstop) call THIS, so coverage is
+    defined once and can't drift between stages.
+
+    - company given → company + indirect (name-variant) check.
+    - contact given → person (stable identity) + conduit (works-at-excluded-firm).
+    """
+    if company:
+        if is_company_excluded(db_path, company):
+            return True, f"excluded company: {company}"
+        if is_indirectly_excluded(db_path, company):
+            return True, f"indirectly excluded (variant of an excluded firm): {company}"
+    if contact:
+        if is_contact_excluded(db_path, contact):
+            who = contact.get("name") or contact.get("linkedin_url") or "contact"
+            return True, f"excluded person: {who}"
+        if is_conduit_excluded(db_path, contact):
+            return True, f"intro conduit at an excluded firm: {contact.get('company')}"
+    return False, None
 
 
 def list_person_exclusions(db_path: str) -> list[dict]:

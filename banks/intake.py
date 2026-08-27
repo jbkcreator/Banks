@@ -26,7 +26,7 @@ from .chatport import ChatPort
 from .csvport import CSVPort, parse_simplify_row
 from .dedup import find_duplicate, find_duplicate_contact
 from .enforcement import Draft
-from .exclusion import is_company_excluded
+from .exclusion import is_target_excluded
 from .flow import Proposed, propose
 from .normalise import classify_pursuit_mode, normalise_company
 from .opportunity import mark_application_drafted, record_opportunity
@@ -90,7 +90,7 @@ def ingest_simplify(
         if not title or not company:
             continue
 
-        if is_company_excluded(db_path, company):
+        if is_target_excluded(db_path, company=company)[0]:
             excluded += 1
             continue
 

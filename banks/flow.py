@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from .approval import ButtonAction, apply_action  # re-exported: one lifecycle door
 from .chatport import ChatPort
 from .contacts import check_contact_discipline
+from .exclusion import DraftExcluded, is_target_excluded
 from .enforcement import Draft
 from .packets import DecisionPacket, create_packet
 from .refs import DraftRef, SendChannel
@@ -47,7 +48,8 @@ class Proposed:
 
 def propose(db_path: str, packet: DecisionPacket, draft: Draft, chat: ChatPort,
             send_channel: SendChannel | str = SendChannel.INTERNAL,
-            josh_email: str | None = None) -> Proposed:
+            josh_email: str | None = None,
+            company: str | None = None, contact: dict | None = None) -> Proposed:
     """Persist the decision, freeze the send intent, then post the draft.
 
     `send_channel` (R-D3) is fixed at draft time: email:praise / email:sendas
@@ -57,12 +59,23 @@ def propose(db_path: str, packet: DecisionPacket, draft: Draft, chat: ChatPort,
     Detailed-financial drafts (#5): Slack shows only the redacted summary
     (render withholds numbers), and the FULL body is routed to Josh by email —
     so on Approve the numbers go to his inbox, never into the channel.
+
+    `company`/`contact` (MOD-06): when a caller knows the draft's target, this
+    every-draft chokepoint enforces the exclusion wall here — the same funnel
+    that already enforces the suppression wall — via the single
+    exclusion.is_target_excluded predicate. Raises DraftExcluded if blocked.
     """
     channel = SendChannel.parse(send_channel)
     to_addr = draft.to
     if draft.detailed_financial and channel is SendChannel.INTERNAL and josh_email:
         channel = SendChannel.SENDAS
         to_addr = josh_email
+
+    # Exclusion wall (MOD-06): one predicate, this every-draft chokepoint.
+    if company or contact:
+        excluded, reason = is_target_excluded(db_path, company=company, contact=contact)
+        if excluded:
+            raise DraftExcluded(reason or "target on the exclusion wall")
 
     # Contact discipline gate (T2-8): suppression + 48h touch-log check.
     # Outbound drafts only — internal drafts have no external recipient.

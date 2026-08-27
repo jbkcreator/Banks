@@ -109,11 +109,7 @@ def _send_time_excluded(db_path: str, ref: str) -> bool:
     queued. Property-side / internal intents with no lane aren't job outreach,
     so they pass through untouched.
     """
-    from .exclusion import (
-        is_company_excluded,
-        is_contact_excluded,
-        is_indirectly_excluded,
-    )
+    from .exclusion import is_target_excluded
     with cursor(db_path) as cur:
         lane = cur.execute(
             "SELECT opportunity_id, contact_id FROM outreach_lanes WHERE draft_ref = ?",
@@ -135,12 +131,12 @@ def _send_time_excluded(db_path: str, ref: str) -> bool:
                 (lane["contact_id"],),
             ).fetchone()
 
-    if company and (is_company_excluded(db_path, company)
-                    or is_indirectly_excluded(db_path, company)):
-        return True
-    if contact and is_contact_excluded(db_path, dict(contact)):
-        return True
-    return False
+    # One predicate — same coverage as intake + surround (draft-time). This is
+    # the send-time backstop for the post-queue race (block at draft AND send).
+    excluded, _reason = is_target_excluded(
+        db_path, company=company, contact=dict(contact) if contact else None
+    )
+    return excluded
 
 
 def relay_run(db_path: str, mailer: Mailer, from_addr: str = DEFAULT_FROM) -> RelayResult:

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 from .chatport import ChatPort
 from .dedup import find_duplicate
-from .exclusion import is_company_excluded
+from .exclusion import is_target_excluded
 from .flow import Proposed
 from .intake import _surface_opportunity  # reuse the one surfacing builder
 from .llmport import LLMPort
@@ -133,7 +133,7 @@ def ingest_manual(
     if not title or not company:
         raise ValueError("manual intake needs at least a title and company")
 
-    if is_company_excluded(db_path, company):
+    if is_target_excluded(db_path, company=company)[0]:
         return ManualIntakeResult(-1, "-", 0, False, False, None, skipped="excluded")
 
     source_url = (url or "").strip() or None

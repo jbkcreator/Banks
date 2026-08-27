@@ -54,12 +54,7 @@ def generate_surround_pack(
         draft_recruiter_lane,
         draft_warm_intro_ask,
     )
-    from .exclusion import (
-        is_company_excluded,
-        is_conduit_excluded,
-        is_contact_excluded,
-        is_indirectly_excluded,
-    )
+    from .exclusion import is_target_excluded
     from .flow import propose
     from .governance import is_company_frozen
     from .refs import SendChannel
@@ -90,15 +85,16 @@ def generate_surround_pack(
         return SurroundPack(opportunity_id=opportunity_id, lanes=[])
 
     # MOD-06 draft-time gate: an excluded company (direct or corporate-variant)
-    # produces no pack at all — defensive backstop to the intake gate.
-    if is_company_excluded(db_path, company) or is_indirectly_excluded(db_path, company):
+    # produces no pack at all — defensive backstop to the intake gate. One
+    # predicate (is_target_excluded), so coverage matches every other stage.
+    if is_target_excluded(db_path, company=company)[0]:
         return SurroundPack(opportunity_id=opportunity_id, lanes=[], blocked=[company])
 
     blocked_contacts: list[str] = []
 
     def _allowed(contact: dict) -> bool:
         """Person-excluded, or a conduit at an excluded firm → drop the lane."""
-        if is_contact_excluded(db_path, contact) or is_conduit_excluded(db_path, contact):
+        if is_target_excluded(db_path, contact=contact)[0]:
             blocked_contacts.append(contact.get("name") or f"contact {contact.get('id')}")
             return False
         return True
