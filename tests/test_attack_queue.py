@@ -68,7 +68,7 @@ def test_tier_a_cards_appear(db_path):
     assert any("Tier A" in t for t in titles)
     tier_a = next(s for s in sections if "Tier A" in s.title)
     assert len(tier_a.cards) == 1
-    assert tier_a.cards[0]["draft_ref"]
+    assert tier_a.cards[0].draft_ref
 
 
 def test_career_facts_empty_blocker_line_not_crash(db_path):
@@ -133,7 +133,7 @@ def test_score_ranking_within_tier(db_path):
     sections = build_sections(db_path, now=_now(), career_facts=FACTS)
     tier_a = next(s for s in sections if "Tier A" in s.title)
     # higher score first
-    assert tier_a.cards[0]["subject"] == "HighCo"
+    assert tier_a.cards[0].subject == "HighCo"
 
 
 # --- post_daily_queue -------------------------------------------------------

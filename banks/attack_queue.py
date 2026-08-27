@@ -34,13 +34,29 @@ if TYPE_CHECKING:
     from .opportunity import CareerFacts
 
 
+@dataclass(frozen=True)
+class Card:
+    """An approvable draft in the queue — a Draft plus its draft_ref. Replaces
+    the hand-built 5-key dict the builders used to return, so a missing field is
+    a construction error, not a runtime KeyError in Slack."""
+
+    draft_ref: str
+    kind: str
+    subject: str
+    body: str = ""
+    to: str = ""
+
+    def as_draft(self) -> "Draft":
+        return Draft(kind=self.kind, to=self.to, subject=self.subject, body=self.body)
+
+
 @dataclass
 class Section:
     """One queue section. `lines` are informational; `cards` are approvable drafts."""
 
     title: str
     lines: list[str] = field(default_factory=list)
-    cards: list[dict] = field(default_factory=list)
+    cards: list["Card"] = field(default_factory=list)
     category: str = ""
 
 
@@ -62,7 +78,7 @@ def build_sections(
     today = now.date().isoformat()
 
     carried = _carried_over_cards(db_path, today)
-    carried_refs = {c["draft_ref"] for c in carried}
+    carried_refs = {c.draft_ref for c in carried}
 
     facts_empty = career_facts is None or career_facts.is_empty()
 
@@ -116,7 +132,7 @@ def build_sections(
     return out
 
 
-def _carried_over_cards(db_path: str, today: str) -> list[dict]:
+def _carried_over_cards(db_path: str, today: str) -> list["Card"]:
     """Pending items first surfaced on an earlier day — the dropped balls.
 
     Includes snoozed items whose snooze_until has arrived (they re-enter here).
@@ -137,13 +153,13 @@ def _carried_over_cards(db_path: str, today: str) -> list[dict]:
     cards = []
     for r in rows:
         age = _age_days(r["first_surfaced_at"], today)
-        cards.append({
-            "draft_ref": r["draft_ref"],
-            "kind": r["category"] or "carried_over",
-            "subject": f"⏳ {r['subject'] or 'draft'} (aging {age}d)",
-            "body": r["body"] or "",
-            "to": r["to_addr"] or "",
-        })
+        cards.append(Card(
+            draft_ref=r["draft_ref"],
+            kind=r["category"] or "carried_over",
+            subject=f"⏳ {r['subject'] or 'draft'} (aging {age}d)",
+            body=r["body"] or "",
+            to=r["to_addr"] or "",
+        ))
     return cards
 
 
@@ -165,7 +181,7 @@ def _active_conversation_lines(db_path: str, now: dt) -> list[str]:
     return lines
 
 
-def _tier_lane_cards(db_path: str, tier: str, exclude_refs: set[str]) -> list[dict]:
+def _tier_lane_cards(db_path: str, tier: str, exclude_refs: set[str]) -> list["Card"]:
     """Pending outreach lanes for opportunities of this tier, score-ranked."""
     with cursor(db_path) as cur:
         rows = cur.execute(
@@ -182,13 +198,13 @@ def _tier_lane_cards(db_path: str, tier: str, exclude_refs: set[str]) -> list[di
     for r in rows:
         if r["draft_ref"] in exclude_refs:
             continue
-        cards.append({
-            "draft_ref": r["draft_ref"],
-            "kind": r["lane_type"],
-            "subject": r["subject"] or r["title"],
-            "body": r["body"] or "",
-            "to": r["to_addr"] or "",
-        })
+        cards.append(Card(
+            draft_ref=r["draft_ref"],
+            kind=r["lane_type"],
+            subject=r["subject"] or r["title"],
+            body=r["body"] or "",
+            to=r["to_addr"] or "",
+        ))
     return cards
 
 
@@ -210,7 +226,7 @@ def _tier_blocker_line(db_path: str, tier: str) -> str | None:
 
 def _follow_up_items(
     db_path: str, today: str, exclude_refs: set[str]
-) -> tuple[list[dict], list[str]]:
+) -> tuple[list["Card"], list[str]]:
     """Due cadence touches → cards if a pending draft exists, else info lines."""
     due = due_cadence_touches(db_path, today)
     cards, lines = [], []
@@ -224,13 +240,13 @@ def _follow_up_items(
                     (ref,),
                 ).fetchone()
             if ref and ref not in exclude_refs and si and si["status"] == "pending":
-                cards.append({
-                    "draft_ref": ref,
-                    "kind": "follow_up",
-                    "subject": si["subject"] or f"Follow-up #{t['touch_number']}",
-                    "body": si["body"] or "",
-                    "to": si["to_addr"] or "",
-                })
+                cards.append(Card(
+                    draft_ref=ref,
+                    kind="follow_up",
+                    subject=si["subject"] or f"Follow-up #{t['touch_number']}",
+                    body=si["body"] or "",
+                    to=si["to_addr"] or "",
+                ))
             else:
                 lines.append(
                     f"• Follow-up #{t['touch_number']} due — {t['lane_type']} "
@@ -344,7 +360,7 @@ def render_summary_blocks(sections: list[Section], date_str: str) -> list[dict]:
         if s.lines:
             body += "\n" + "\n".join(s.lines)
         if s.cards:
-            body += "\n" + "\n".join(f"• {c['subject']}" for c in s.cards)
+            body += "\n" + "\n".join(f"• {c.subject}" for c in s.cards)
         blocks.append({"type": "divider"})
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": body}})
     return blocks
@@ -391,14 +407,12 @@ def post_daily_queue(
         cur.execute("UPDATE daily_queue SET root_ts = ? WHERE date = ?", (root_ts, today))
         for s in sections:
             for c in s.cards:
-                ref = c.get("draft_ref")
+                ref = c.draft_ref
                 if not ref:
                     continue
-                draft = Draft(kind=c["kind"], to=c.get("to", ""),
-                              subject=c.get("subject", ""), body=c.get("body", ""))
                 res = chat.post_blocks(
-                    f"[DRAFT — {c['kind']}] {c['subject']}",
-                    render_queue_card_blocks(draft, ref),
+                    f"[DRAFT — {c.kind}] {c.subject}",
+                    render_queue_card_blocks(c.as_draft(), ref),
                     thread_ts=root_ts,
                 )
                 card_ts = res.get("ts")
