@@ -4,7 +4,7 @@ On Approve of a Tier A opportunity, generates all applicable outreach lanes as
 separate Slack cards (each separately approvable by Josh). Tier B gets recruiter
 lane only — enough to stay visible without blasting a half-qualified opp.
 
-Decisions locked in BUILD_DECISIONS_MOD03-06.md:
+Decisions locked in docs/decisions/BUILD_DECISIONS_MOD03-06.md:
 - Tier A → full surround pack (HM/LinkedIn + warm intro + recruiter + employee + POV brief)
 - Tier B → recruiter lane only
 - Empty career-facts → refuse and report (no-embellishment constitution)

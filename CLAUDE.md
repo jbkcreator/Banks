@@ -103,7 +103,7 @@ approval. No autonomous sends, no standing orders.
 - `banks/governance.py` — Daily caps (email 40, LinkedIn 20, overflow-safe); `got_reply()` atomically freezes company + cadence; `queue_cadence()` Day 3/7/14 keyed off `outreach_lanes.sent_at`; `due_cadence_touches()` stops on interviewing/closed; `network_activation_due()`; `weekly_funnel_summary()`; `check_14day_spacing()` by contact_id.
 - Schema additions: `outreach_lanes`, `warm_intros`, `cadence_queue`, `governance_ledger`, `company_freeze`, `funnel_events`.
 
-### MOD-05 key modules (build-complete; full grill in docs/BUILD_DECISIONS_MOD03-06.md)
+### MOD-05 key modules (build-complete; full grill in docs/decisions/BUILD_DECISIONS_MOD03-06.md)
 - `banks/attack_queue.py` — pure `build_sections()` (failure-mode-first order,
   empty-omit, career-facts blocker line, score ranking, imported digest, funnel
   footer) + `post_daily_queue()` (exactly-once via `daily_queue` date-claim;
