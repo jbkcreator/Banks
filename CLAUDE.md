@@ -207,6 +207,7 @@ approval. No autonomous sends, no standing orders.
   ingested as Tier B held-for-enrichment, Rent Solutions excluded
 - ✅ Kill switch (`stop all` halts all jobs)
 - ✅ Idempotency — second queue post same day skipped
+- ✅ LinkedIn DM deep-link (Gap 2) — card shows compose link, Mark done confirmed working
 - ✅ `files:read` scope added to Banks Slack app (CTO done)
 
 ### Launch / infra
