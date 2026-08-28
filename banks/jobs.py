@@ -58,12 +58,26 @@ def run_job(name: str, db_path: str, chat: ChatPort) -> dict | None:
         # MOD-05 cockpit. Idempotent per date (post_daily_queue claims the day),
         # so the self-heal retry wrapper can re-fire without double-posting.
         from .attack_queue import post_daily_queue
-        from .opportunity import CareerFacts
+        from .opportunity import load_career_facts
         log_event(db_path, "draft_created", meta={"job": "daily_attack_queue"}, minutes_saved=0)
-        return post_daily_queue(db_path, chat, career_facts=CareerFacts())
+        return post_daily_queue(db_path, chat, career_facts=load_career_facts())
     if name == "nightly_reflection":
         from .reflection import run_reflection
         return run_reflection(db_path, chat)
+    if name == "relay_dispatch":
+        # An Approve only flips send_intents to 'approved' (approval.py) —
+        # Relay is the sole credential-holder that actually sends (R-D1),
+        # so the mailer selection lives in relay.dispatch, not here.
+        from .relay import dispatch as relay_dispatch
+        try:
+            result = relay_dispatch(db_path)
+        except RuntimeError:
+            return None  # no mailer configured yet; retry on the next tick
+        if result.sent:
+            log_event(db_path, "draft_created", meta={"job": "relay_dispatch",
+                      "sent": len(result.sent)}, minutes_saved=0)
+        return {"sent": result.sent, "skipped": result.skipped,
+                "failed": result.failed, "blocked": result.blocked}
     return None
 
 

@@ -228,3 +228,14 @@ def relay_run(db_path: str, mailer: Mailer, from_addr: str = DEFAULT_FROM) -> Re
             failed.append(ref)
 
     return RelayResult(sent=sent, skipped=skipped, failed=failed, blocked=blocked)
+
+
+def dispatch(db_path: str, from_addr: str = DEFAULT_FROM) -> RelayResult:
+    """Production entry point for the scheduled relay_dispatch job (jobs.py).
+
+    Selects the live mailer here — R-D1 means only relay.py/mailer.py may
+    import the send credential, so the mailer choice can't live in jobs.py,
+    which is agent-side and shared with every other standing job.
+    """
+    from .mailer import load_mailer
+    return relay_run(db_path, load_mailer(), from_addr)

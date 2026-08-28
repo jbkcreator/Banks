@@ -66,7 +66,7 @@ def classify_incoming(text: str, has_pending_revision: bool) -> str:
     return "ignore"
 
 
-def _handle_action(cfg: BanksConfig, web, payload: dict) -> None:
+def _handle_action(cfg: BanksConfig, web, payload: dict, llm=None, chat=None) -> None:
     actions = payload.get("actions") or []
     if not actions:
         return
@@ -113,8 +113,46 @@ def _handle_action(cfg: BanksConfig, web, payload: dict) -> None:
     # just acknowledges.
     result = apply_action(cfg.db_path, button, draft_ref, user_id)
 
+    if button is ButtonAction.APPROVE:
+        _maybe_generate_surround_pack(cfg, draft_ref, chat, llm)
+
     if channel and ts:
         _update_card(web, channel, ts, result.status_text, draft_ref, user_id)
+
+
+def _maybe_generate_surround_pack(cfg: BanksConfig, draft_ref: str, chat, llm) -> None:
+    """Approving a Tier A/B 'pursue this role?' card must produce its surround
+    pack (MOD-03) — otherwise the click acknowledges the card and nothing else
+    happens. Only 'opportunity' packets carry a linked opportunity (see
+    opportunities.source_packet_id, set by intake._surface_opportunity); other
+    kinds (property inquiries, outreach lanes themselves) are no-ops here.
+
+    Idempotent: skipped if the opportunity already has any outreach_lanes rows,
+    so a duplicate Slack delivery of the same click can't double-post lanes.
+    """
+    if chat is None:
+        return
+    from .opportunity import load_career_facts
+    from .store import cursor
+    from .surround import generate_surround_pack
+
+    with cursor(cfg.db_path) as cur:
+        opp = cur.execute(
+            "SELECT id FROM opportunities WHERE source_packet_id = ?", (draft_ref,)
+        ).fetchone()
+        if not opp:
+            return
+        existing = cur.execute(
+            "SELECT 1 FROM outreach_lanes WHERE opportunity_id = ? LIMIT 1",
+            (opp["id"],),
+        ).fetchone()
+    if existing:
+        return
+
+    try:
+        generate_surround_pack(cfg.db_path, opp["id"], load_career_facts(), chat, llm)
+    except ValueError as exc:  # empty career-facts, missing opportunity — surface, don't crash
+        print(f"[listener] surround pack error: {exc!r}", flush=True)
 
 
 def _handle_queue_action(cfg: BanksConfig, action_id: str, draft_ref: str) -> str:
@@ -286,6 +324,15 @@ def _handle_file(cfg: BanksConfig, web, chat, event: dict) -> None:
 
 
 def run(cfg: BanksConfig | None = None) -> None:
+    cfg = cfg or load_config()
+    if not (cfg.slack_bot_token and cfg.slack_app_token):
+        raise SystemExit("Need BANKS_SLACK_BOT_TOKEN and BANKS_SLACK_APP_TOKEN.")
+    if not cfg.approver_user_id:
+        # Fail closed: an unset approver id makes is_authorized() allow anyone
+        # (the test-workspace default). A live listener must never inherit that.
+        raise SystemExit("Need BANKS_APPROVER_USER_ID set before running live — "
+                         "an unset approver id lets any workspace member approve sends.")
+
     from slack_sdk.socket_mode import SocketModeClient
     from slack_sdk.socket_mode.request import SocketModeRequest
     from slack_sdk.socket_mode.response import SocketModeResponse
@@ -293,10 +340,6 @@ def run(cfg: BanksConfig | None = None) -> None:
 
     from .chatport import LiveChatPort
     from .llmport import load_llm_port
-
-    cfg = cfg or load_config()
-    if not (cfg.slack_bot_token and cfg.slack_app_token):
-        raise SystemExit("Need BANKS_SLACK_BOT_TOKEN and BANKS_SLACK_APP_TOKEN.")
 
     web = WebClient(token=cfg.slack_bot_token)
     sm = SocketModeClient(app_token=cfg.slack_app_token, web_client=web)
@@ -327,7 +370,7 @@ def run(cfg: BanksConfig | None = None) -> None:
 
         if req.type == "interactive":
             try:
-                _handle_action(cfg, web, req.payload)
+                _handle_action(cfg, web, req.payload, llm, chat)
             except Exception as exc:  # never let a click die silently
                 print(f"[listener] handler error: {exc!r}", flush=True)
 

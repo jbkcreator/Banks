@@ -15,10 +15,11 @@ from zoneinfo import ZoneInfo
 @dataclass(frozen=True)
 class StandingJob:
     name: str
-    # cron-like: "daily HH:MM", "weekly <weekday> HH:MM", "quarterly"
+    # cron-like: "daily HH:MM", "weekly <weekday> HH:MM", "quarterly", "interval"
     cadence: str
     fire_time: time | None = None
     weekday: int | None = None  # 0=Monday ... 4=Friday
+    interval_minutes: int | None = None  # cadence == "interval": fire every N minutes
 
 
 STANDING_JOBS = [
@@ -31,6 +32,10 @@ STANDING_JOBS = [
     StandingJob("weekly_opportunity_cost_meter", "weekly", fire_time=time(17, 0), weekday=4),
     # MOD-01 forwarded email intake — polls banks-intake@gmail.com every 10 min.
     StandingJob("email_intake_poll", "interval_10min"),
+    # Relay dispatch (PR #9 review gap): an Approve only flips send_intents to
+    # 'approved' — something has to actually call relay_run(). Short interval
+    # so an approved draft doesn't sit for hours before it's sent.
+    StandingJob("relay_dispatch", "interval", interval_minutes=5),
 ]
 
 
@@ -51,6 +56,10 @@ def due_jobs(now: datetime, timezone_name: str = "America/New_York") -> list[Sta
     for job in STANDING_JOBS:
         if job.cadence == "quarterly":
             continue  # scheduled externally on a quarterly cron, not minute-checked
+        if job.cadence == "interval":
+            if job.interval_minutes and local_now.minute % job.interval_minutes == 0:
+                due.append(job)
+            continue
         if job.fire_time is None:
             continue
         if local_now.hour != job.fire_time.hour or local_now.minute != job.fire_time.minute:
