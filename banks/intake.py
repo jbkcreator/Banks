@@ -176,7 +176,13 @@ def _surface_opportunity(db_path, chat, opp_id, parsed, fit, tier, pursuit_mode)
             f"{warm_block}"
         ),
     )
-    return propose(db_path, packet, draft, chat)
+    proposed = propose(db_path, packet, draft, chat)
+    with cursor(db_path) as cur:
+        cur.execute(
+            "UPDATE opportunities SET source_packet_id = ? WHERE id = ?",
+            (proposed.packet_id, opp_id),
+        )
+    return proposed
 
 
 def ingest_email_confirmations(

@@ -126,6 +126,8 @@ class TestEmailIntake:
         from banks.store import init_db as _init
         import datetime
         with cursor(db_path) as cur:
+            # Store the normalised slug ("Excluded Corp" → "excluded"); is_company_excluded
+            # normalises the subject-derived name the same way before matching.
             cur.execute("INSERT INTO company_exclusions (company_normalized, added_at) VALUES (?,?)",
                         ("excluded", datetime.datetime.utcnow().isoformat()))
         port = FakeEmailPort([

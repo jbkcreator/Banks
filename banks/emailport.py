@@ -112,7 +112,8 @@ def extract_company_from_subject(subject: str) -> str:
     patterns = [
         r"application (?:to|at|for) ([A-Za-z0-9 &,.\-]+?) (?:for|–|-|\|)",
         r"(?:at|to) ([A-Za-z0-9 &,.\-]+?) –",
-        r"your application(?: to)? ([A-Za-z0-9 &,.\-]+?) (?:has been|was|is)",
+        r"your application(?: to)? ([A-Za-z0-9 &,.\-]+?) (?:has been|was|is|received)",
+        r"your application(?: to)? ([A-Za-z0-9 &,.\-]+)",
     ]
     for pattern in patterns:
         m = re.search(pattern, subject, re.IGNORECASE)
