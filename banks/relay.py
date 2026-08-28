@@ -139,13 +139,33 @@ def _send_time_excluded(db_path: str, ref: str) -> bool:
     return excluded
 
 
+def _lookup_lane(db_path: str, draft_ref: str) -> dict | None:
+    with cursor(db_path) as cur:
+        row = cur.execute(
+            "SELECT id, contact_id, opportunity_id, lane_type "
+            "FROM outreach_lanes WHERE draft_ref = ?",
+            (draft_ref,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def relay_run(db_path: str, mailer: Mailer, from_addr: str = DEFAULT_FROM) -> RelayResult:
     """Send every approved intent exactly once. Idempotent + receipted.
 
-    Halt (T3-14) and the MOD-06 send-time exclusion gate both fire here so
-    relay_run is safe even when called directly (not only via a halted job).
+    Order of gates per intent:
+      1. Halt check (T3-14).
+      2. MOD-06 send-time exclusion (re-check after queuing).
+      3. Daily cap (channel-specific: email 40 / linkedin 20).
+      4. 14-day per-contact spacing.
+    After a successful send: mark_lane_sent, queue_cadence, record_funnel_event.
     """
+    from datetime import date
+
+    from .governance import (check_14day_spacing, check_and_increment,
+                             mark_lane_sent, queue_cadence, record_funnel_event)
+
     check_halt()  # a halted Banks must never send — freeze, don't transmit.
+    today = date.today().isoformat()
     sent, skipped, failed, blocked = [], [], [], []
     with cursor(db_path) as cur:
         rows = [dict(r) for r in cur.execute(
@@ -165,6 +185,19 @@ def relay_run(db_path: str, mailer: Mailer, from_addr: str = DEFAULT_FROM) -> Re
             blocked.append(ref)
             continue
 
+        # Governance: daily cap check — keyed on lane_type (linkedin vs email).
+        lane = _lookup_lane(db_path, ref)
+        cap_key = "linkedin" if (lane and lane.get("lane_type") == "linkedin") else "email"
+        if not check_and_increment(db_path, cap_key, today):
+            blocked.append(ref)
+            continue
+
+        # Governance: 14-day per-contact spacing.
+        if lane and lane.get("contact_id"):
+            if not check_14day_spacing(db_path, lane["contact_id"], today):
+                blocked.append(ref)
+                continue
+
         # Claim: UNIQUE draft_ref means a second run/duplicate can't re-send.
         try:
             with cursor(db_path) as cur:
@@ -183,6 +216,10 @@ def relay_run(db_path: str, mailer: Mailer, from_addr: str = DEFAULT_FROM) -> Re
                             "updated_at=? WHERE draft_ref=?", (pid, _now(), ref))
                 cur.execute("UPDATE send_intents SET status='sent' WHERE draft_ref=?",
                             (ref,))
+            if lane:
+                mark_lane_sent(db_path, lane["id"])
+                queue_cadence(db_path, lane["id"])
+                record_funnel_event(db_path, lane["opportunity_id"], "outreach_sent")
             sent.append(ref)
         except Exception as exc:  # stays 'sending'/failed -> ages in the brief
             with cursor(db_path) as cur:
