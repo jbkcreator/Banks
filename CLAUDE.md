@@ -67,8 +67,8 @@ approval. No autonomous sends, no standing orders.
 | MOD-02 | Contact resolution, enrichment, warm-path graph | **Build-complete, e2e-tested; Clay enrichment needs paid plan** |
 | MOD-03 | 7 distribution lanes & surround workflow | **Build-complete, code-reviewed, 460 tests green** |
 | MOD-04 | Follow-up cadence, governance, collision ledger | **Build-complete, code-reviewed, 460 tests green** |
-| MOD-05 | Slack command & control (Daily Attack Queue) | **Build-complete; Approve/Skip/Snooze/Mark-done proven LIVE in test ws; button-driven revision wired; commands wired. Needs Event Subscriptions enabled on Banks Slack app.** |
-| MOD-06 | Adversarial exclusion & launch staging | **Build-complete; two-gate exclusion (intake + send-time); person/company/indirect/conduit exclusion; Slack CSV upload (Simplify); 460 tests green. Pending: Josh's full exclusion list + `files:read` scope on Slack app.** |
+| MOD-05 | Slack command & control (Daily Attack Queue) | **Build-complete; Approve/Skip/Snooze/Mark-done + Revise ALL proven LIVE in test ws (2026-08-28). Event Subscriptions enabled. Network Activation Lite (Tier A/B-tied contacts, channel suggestion) + No-Open-Role Lite (consulting pitch for warm-contact companies with no active opp) both built + tested.** |
+| MOD-06 | Adversarial exclusion & launch staging | **Build-complete; two-gate exclusion (intake + send-time); person/company/indirect/conduit exclusion; Slack CSV upload proven LIVE (2026-08-28). 473 tests green. Pending: Josh's full exclusion list.** |
 
 ### MOD-01/02 key modules (all unit-tested; 460 tests green across the suite)
 - `banks/intake.py` — the orchestration seam. `ingest_simplify()` runs
@@ -179,15 +179,14 @@ approval. No autonomous sends, no standing orders.
   should be one `transaction()`. Low risk (single user, SQLite) but incorrect.
 - Dead code in `revisions.py`: `is_revision_context`, `classify_revision` —
   unused since button-driven revision replaced thread-reply approach. Safe to delete.
+- Production startup must go through `Container.live()` (calls
+  `load_exclusions_from_file`) — raw `init_db` skips exclusion seeding. Already
+  correct in the listener; test scripts need the same.
 
 ### Client-gated (waiting on Josh / CTO)
 - **`career-facts.md` is empty** — Josh's resume facts must be added before any
   outreach draft is useful. Biggest content blocker.
 - **Full exclusion list** — only "Rent Solutions" seeded in `exclusions.txt`.
-- **`files:read` scope** — must be added to Banks Slack app for CSV upload
-  (`_handle_file`) to work. CTO item.
-- **Event Subscriptions** (`message.channels`) — must be enabled on Banks Slack
-  app for message-event handling (revisions, commands) to work.
 - **Paid Clay / Hunter.io** — for hands-off contact enrichment. Manual CSV
   (`ManualCSVEnrichmentPort`) is $0 interim.
 - **Josh's Gmail app password** — for live email send via `SmtpMailer`. Zero real
@@ -195,13 +194,22 @@ approval. No autonomous sends, no standing orders.
 - **LoopCV export** — `parse_loopcv_row` is built but dormant; needs Josh's real
   export file to confirm column names.
 
+### Live-tested (2026-08-28, test workspace)
+- ✅ Approve / Skip / Snooze / Mark-done buttons
+- ✅ Revise (button-driven NL revision, Event Subscriptions confirmed working)
+- ✅ CSV upload — Simplify export dropped in #banks-jobs, receipt posted, 4 rows
+  ingested as Tier B held-for-enrichment, Rent Solutions excluded
+- ✅ Kill switch (`stop all` halts all jobs)
+- ✅ Idempotency — second queue post same day skipped
+- ✅ `files:read` scope added to Banks Slack app (CTO done)
+
 ### Launch / infra
 - Live end-to-end acceptance run (7-item signed checklist in `docs/launch/LAUNCH_ACCEPTANCE.md`).
 - Production server (Hetzner) — provisioning + deploy.
 - Merge stack to `main` — PRs open on feature branches; stack must merge bottom-up.
 
 ## Testing
-`python -m pytest tests/ -q` — **460 passing**. Every new external adapter must be
+`python -m pytest tests/ -q` — **473 passing**. Every new external adapter must be
 added to `test_hardwall.py`'s allowlist and prove no FA imports.
 
 ## Git
