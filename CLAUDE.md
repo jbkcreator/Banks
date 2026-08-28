@@ -175,10 +175,6 @@ approval. No autonomous sends, no standing orders.
 ## Open blockers to going live
 
 ### Our side (we can fix now)
-- `mark_done` not atomic — 6 separate `cursor()` calls in `queue_actions.py`;
-  should be one `transaction()`. Low risk (single user, SQLite) but incorrect.
-- Dead code in `revisions.py`: `is_revision_context`, `classify_revision` —
-  unused since button-driven revision replaced thread-reply approach. Safe to delete.
 - Production startup must go through `Container.live()` (calls
   `load_exclusions_from_file`) — raw `init_db` skips exclusion seeding. Already
   correct in the listener; test scripts need the same.
@@ -216,7 +212,7 @@ approval. No autonomous sends, no standing orders.
 - Merge stack to `main` — PRs open on feature branches; stack must merge bottom-up.
 
 ## Testing
-`python -m pytest tests/ -q` — **490 passing**. Every new external adapter must be
+`python -m pytest tests/ -q` — **485 passing**. Every new external adapter must be
 added to `test_hardwall.py`'s allowlist and prove no FA imports.
 
 ## Git
