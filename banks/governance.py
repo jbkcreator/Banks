@@ -258,12 +258,15 @@ _DECISION_MAKER_KEYWORDS = ("director", "vp", "head", "chief", "cro", "ceo", "cm
 
 
 def network_activation_due(
-    db_path: str, today: str, limit: int = 3
+    db_path: str, today: str, limit: int = 5
 ) -> list[dict]:
-    """Return up to `limit` contacts untouched for 14+ days, ranked by seniority.
+    """Return up to `limit` contacts tied to active Tier A/B opportunities,
+    untouched for 14+ days, ranked by warmth then seniority.
 
-    Ranking: decision-maker titles first, then recruiter source, then rest.
-    "Untouched" = no outreach_lane.sent_at in the last 14 days.
+    Only contacts whose company has at least one active Tier A or B opportunity
+    are included — the rest are noise (Q3 grill decision). degree=1 first,
+    then decision-maker titles, then recruiter source, then rest.
+    "Untouched" = no outreach_lane.sent_at AND no touch_log entry in last 14 days.
     """
     cutoff = (
         datetime.date.fromisoformat(today)
@@ -273,27 +276,82 @@ def network_activation_due(
     with cursor(db_path) as cur:
         rows = cur.execute(
             """SELECT c.*,
-               COALESCE(MAX(ol.sent_at), '') last_sent
+               COALESCE(MAX(ol_sent.sent_at), '') last_lane_sent,
+               COALESCE(MAX(tl.touched_at), '') last_touch
                FROM contacts c
-               LEFT JOIN outreach_lanes ol ON ol.contact_id = c.id AND ol.sent_at IS NOT NULL
+               -- must be tied to an active Tier A/B opportunity via company
+               JOIN opportunities o
+                   ON o.company_normalized = c.company
+                   AND o.tier IN ('A', 'B')
+                   AND o.needs_enrichment = 0
+                   AND COALESCE(o.status, '') NOT IN ('closed', 'interviewing')
+               LEFT JOIN outreach_lanes ol_sent
+                   ON ol_sent.contact_id = c.id AND ol_sent.sent_at IS NOT NULL
+               LEFT JOIN touch_log tl ON tl.address = c.email AND c.email != ''
                GROUP BY c.id
-               HAVING last_sent = '' OR last_sent <= ?
+               HAVING (last_lane_sent = '' OR last_lane_sent <= ?)
+                  AND (last_touch    = '' OR last_touch    <= ?)
                ORDER BY c.id""",
-            (cutoff,),
+            (cutoff, cutoff),
         ).fetchall()
 
     contacts = [dict(r) for r in rows]
 
-    def _rank(c: dict) -> int:
+    def _rank(c: dict) -> tuple:
+        degree = c.get("degree") or 9
         title = (c.get("title") or "").lower()
-        if any(k in title for k in _DECISION_MAKER_KEYWORDS):
-            return 0
-        if c.get("source") in ("recruiter_registry",):
-            return 1
-        return 2
+        seniority = 0 if any(k in title for k in _DECISION_MAKER_KEYWORDS) else 1
+        source_rank = 0 if c.get("source") == "recruiter_registry" else 1
+        return (degree, seniority, source_rank)
 
     contacts.sort(key=_rank)
     return contacts[:limit]
+
+
+def no_open_role_candidates(db_path: str, today: str, limit: int = 3) -> list[dict]:
+    """Companies with warm contacts (degree=1) but NO active opportunity in the DB.
+
+    Returns up to `limit` candidates ranked by contact warmth. Skips companies
+    that had a no-open-role pitch within the last 14 days (touch_log keyed on
+    company name). Used by the Daily Attack Queue "No-Open-Role Lite" section.
+    """
+    cutoff = (
+        datetime.date.fromisoformat(today)
+        - datetime.timedelta(days=CONTACT_SPACING_DAYS)
+    ).isoformat() + "T00:00:00"
+
+    with cursor(db_path) as cur:
+        # Companies with warm contacts
+        warm = cur.execute(
+            "SELECT DISTINCT company FROM contacts WHERE degree = 1 AND company != ''"
+        ).fetchall()
+        warm_companies = {r["company"] for r in warm}
+
+        # Companies that already have active opportunities
+        active_opps = cur.execute(
+            "SELECT DISTINCT company_normalized FROM opportunities "
+            "WHERE COALESCE(status, '') NOT IN ('closed')"
+        ).fetchall()
+        active_companies = {r["company_normalized"] for r in active_opps}
+
+        # Recently pitched no-open-role (keyed: touch_log address = 'no_open_role:<company>')
+        recent = cur.execute(
+            "SELECT address FROM touch_log WHERE address LIKE 'no_open_role:%' "
+            "AND touched_at > ?", (cutoff,)
+        ).fetchall()
+        recently_pitched = {r["address"].removeprefix("no_open_role:") for r in recent}
+
+    candidates = []
+    for company in sorted(warm_companies - active_companies - recently_pitched):
+        with cursor(db_path) as cur:
+            contact = cur.execute(
+                "SELECT * FROM contacts WHERE company = ? AND degree = 1 ORDER BY id LIMIT 1",
+                (company,),
+            ).fetchone()
+        if contact:
+            candidates.append({"company": company, "contact": dict(contact)})
+
+    return candidates[:limit]
 
 
 # ---------------------------------------------------------------------------

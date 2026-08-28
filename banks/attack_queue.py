@@ -25,6 +25,7 @@ from .enforcement import Draft
 from .governance import (
     due_cadence_touches,
     network_activation_due,
+    no_open_role_candidates,
     weekly_funnel_summary,
 )
 from .store import cursor, transaction
@@ -68,6 +69,7 @@ def build_sections(
     db_path: str,
     now: dt | None = None,
     career_facts: "CareerFacts | None" = None,
+    chat: "ChatPort | None" = None,
 ) -> list[Section]:
     """Assemble the day's sections, failure-mode-first, empties omitted.
 
@@ -113,6 +115,10 @@ def build_sections(
     relationship = _relationship_lines(db_path, today)
     if relationship:
         out.append(Section("🤝 Relationship outreach", relationship, [], category="relationship"))
+
+    nor_cards = _no_open_role_cards(db_path, today, career_facts, chat)
+    if nor_cards:
+        out.append(Section("📭 No-open-role pitches", [], nor_cards, category="no_open_role"))
 
     imported = _imported_digest_line(db_path)
     if imported:
@@ -256,15 +262,95 @@ def _follow_up_items(
 
 
 def _relationship_lines(db_path: str, today: str) -> list[str]:
-    """Network Activation Lite — the same engine as the on-demand call list."""
-    contacts = network_activation_due(db_path, today, limit=3)
+    """Network Activation Lite — Tier A/B-tied contacts untouched 14+ days.
+
+    Shows suggested channel: email if verified, else LinkedIn, else phone (notes).
+    Cap 5 (Q3 grill), ranked by degree then seniority.
+    """
+    contacts = network_activation_due(db_path, today, limit=5)
     lines = []
     for c in contacts:
-        role = c.get("title") or c.get("position") or ""
         name = c.get("name") or "contact"
-        suffix = f" ({role})" if role else ""
-        lines.append(f"• {name}{suffix} — reach out (untouched 14+ days)")
+        company = c.get("company") or ""
+        role = c.get("title") or c.get("position") or ""
+        suffix = f" · {role}" if role else ""
+        company_part = f" @ {company}" if company else ""
+
+        if c.get("verified") and c.get("email"):
+            channel = "📧 Email"
+        elif c.get("linkedin_url"):
+            channel = "💼 LinkedIn"
+        else:
+            channel = "📞 Call/Text"
+
+        lines.append(f"• {name}{company_part}{suffix} — {channel} (untouched 14+ days)")
     return lines
+
+
+def _no_open_role_cards(
+    db_path: str, today: str, career_facts: "CareerFacts | None",
+    chat: "ChatPort | None",
+) -> list["Card"]:
+    """No-Open-Role Lite — consulting pitch for warm-contact companies with no active posting.
+
+    Generates a full draft using draft_consulting_lane (facts-only) and persists
+    it via propose() so it becomes an approvable Decision Packet. The 14-day
+    cooldown in no_open_role_candidates() prevents re-surfacing the same company
+    within two weeks. career_facts empty or no chat → returns [] (no draft can
+    be generated without facts, and we need a real ChatPort to post).
+    """
+    if career_facts is None or career_facts.is_empty() or chat is None:
+        return []
+
+    from .enforcement import Draft as _Draft
+    from .exclusion import DraftExcluded
+    from .flow import propose
+    from .lanes import draft_consulting_lane
+    from .packets import DecisionPacket
+    from .refs import SendChannel
+
+    candidates = no_open_role_candidates(db_path, today, limit=3)
+    cards = []
+    for cand in candidates:
+        company = cand["company"]
+        contact = cand["contact"]
+        try:
+            lane_draft = draft_consulting_lane("(no open role)", company, career_facts)
+        except Exception:
+            continue
+
+        body = lane_draft.body if hasattr(lane_draft, "body") else str(lane_draft)
+        to_addr = contact.get("email") or contact.get("linkedin_url") or ""
+        slack_draft = _Draft(
+            kind="no_open_role",
+            to=to_addr,
+            subject=f"No-open-role pitch — {company}",
+            body=body,
+        )
+        packet = DecisionPacket(
+            kind="no_open_role",
+            decision=f"Pitch {company} — no open role posted, warm contact on file.",
+            recommendation="Send a consulting/exec pitch to your warm contact there.",
+            default_if_unanswered="skip",
+            reversible=True,
+        )
+        try:
+            proposed = propose(db_path, packet, slack_draft, chat,
+                               send_channel=SendChannel.INTERNAL,
+                               company=company, contact=contact)
+        except DraftExcluded:
+            continue
+        except Exception:
+            continue
+
+        cards.append(Card(
+            draft_ref=str(proposed.ref),
+            kind="no_open_role",
+            subject=f"No-open-role pitch — {company}",
+            body=body,
+            to=to_addr,
+        ))
+    return cards
 
 
 def _imported_digest_line(db_path: str) -> str | None:
@@ -396,7 +482,7 @@ def post_daily_queue(
             ).fetchone()
         return {"ok": True, "skipped": True, "root_ts": row["root_ts"] if row else None}
 
-    sections = build_sections(db_path, now=now, career_facts=career_facts)
+    sections = build_sections(db_path, now=now, career_facts=career_facts, chat=chat)
     root = chat.post_blocks(
         f"Daily Attack Queue — {today}", render_summary_blocks(sections, today)
     )
