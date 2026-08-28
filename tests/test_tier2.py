@@ -124,8 +124,9 @@ def test_touch_collision_within_48h(db):
         check_contact_discipline(db, "t@example.com", now=now)
 
 
-def test_no_collision_after_48h(db):
-    record_touch(db, "t@example.com", "1", touched_at="2026-08-04T00:00:00+00:00")
+def test_no_collision_after_touch_window(db):
+    # Touch window is now 336h (14 days). Simulate a touch 15 days ago.
+    record_touch(db, "t@example.com", "1", touched_at="2026-07-22T00:00:00+00:00")
     now = datetime(2026, 8, 6, 10, 0, tzinfo=timezone.utc)
     check_contact_discipline(db, "t@example.com", now=now)  # no raise
 

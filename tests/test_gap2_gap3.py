@@ -127,7 +127,7 @@ class TestEmailIntake:
         import datetime
         with cursor(db_path) as cur:
             cur.execute("INSERT INTO company_exclusions (company_normalized, added_at) VALUES (?,?)",
-                        ("excluded corp", datetime.datetime.utcnow().isoformat()))
+                        ("excluded", datetime.datetime.utcnow().isoformat()))
         port = FakeEmailPort([
             {"subject": "Your application to Excluded Corp was received", "body": "", "from": "", "date": ""},
         ])

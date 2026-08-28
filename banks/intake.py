@@ -26,9 +26,9 @@ from .chatport import ChatPort
 from .csvport import CSVPort, parse_simplify_row
 from .dedup import find_duplicate, find_duplicate_contact
 from .enforcement import Draft
-from .exclusion import is_target_excluded
+from .exclusion import is_company_excluded
 from .flow import Proposed, propose
-from .normalise import classify_pursuit_mode, normalise_company
+from .normalise import classify_pursuit_mode, map_simplify_status, normalise_company
 from .opportunity import mark_application_drafted, record_opportunity
 from .packets import DecisionPacket
 from .store import cursor
@@ -90,9 +90,12 @@ def ingest_simplify(
         if not title or not company:
             continue
 
-        if is_target_excluded(db_path, company=company)[0]:
+        if is_company_excluded(db_path, company):
             excluded += 1
             continue
+
+        simplify_status = map_simplify_status(parsed.get("status", ""))
+
 
         source_url = parsed["source_url"].strip() or None
         if find_duplicate(db_path, source_url, title, company) is not None:
@@ -107,8 +110,15 @@ def ingest_simplify(
             tier=tier, pursuit_mode=pursuit_mode,
             company_normalized=normalise_company(company), source_url=source_url,
             needs_enrichment=needs_enrichment,
+            status=simplify_status,
         )
         ingested += 1
+
+        # Closed rows are recorded for dedup/history but never surfaced.
+        if simplify_status == "closed":
+            held += 1
+            continue
+
 
         if needs_enrichment:
             held += 1
@@ -199,7 +209,7 @@ def ingest_email_confirmations(
         company = extract_company_from_subject(subject) or "Unknown (forwarded email)"
         title = "(from forwarded confirmation)"
 
-        if is_target_excluded(db_path, company=company)[0]:
+        if is_company_excluded(db_path, company):
             skipped += 1
             continue
 

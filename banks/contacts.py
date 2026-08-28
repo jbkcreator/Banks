@@ -21,7 +21,7 @@ class TouchCollision(Exception):
     """Raised when a draft recipient was already touched within 48 hours."""
 
 
-TOUCH_WINDOW_HOURS = 48
+TOUCH_WINDOW_HOURS = 336  # 14 days — MOD-04 follow-up cadence spans weeks, not hours
 
 
 # ---------------------------------------------------------------------------

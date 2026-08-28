@@ -77,7 +77,20 @@ CREATE TABLE IF NOT EXISTS opportunities (
     application_drafted_at TEXT,
     submitted INTEGER NOT NULL DEFAULT 0,     -- always 0 by construction; see enforcement.py
     followed_up_at TEXT,
-    status TEXT NOT NULL DEFAULT 'sourced'    -- sourced | drafted | (never: submitted)
+    status TEXT NOT NULL DEFAULT 'sourced',   -- sourced | drafted | (never: submitted)
+    tier TEXT NOT NULL DEFAULT 'C',           -- A | B | C
+    pursuit_mode TEXT,                        -- full_time | contract_to_hire | fractional | consulting
+    company_normalized TEXT,                  -- lowercase, legal suffixes stripped
+    source_url TEXT,                          -- dedup primary key (exact match first)
+    contact_id INTEGER,                       -- FK to contacts table
+    -- 1 while comp/vertical are unknown (e.g. Simplify-only intake). Such rows
+    -- are recorded but NOT surfaced to Slack — tiering is half-blind until
+    -- enrichment fills comp+vertical, at which point score is recomputed and
+    -- needs_enrichment flips to 0 (then Tier A/B may surface). Decision 4.
+    needs_enrichment INTEGER NOT NULL DEFAULT 0,
+    -- Role's industry/vertical (from JD extraction). Persisted so the warm-path
+    -- referral engine can match a recruiter's vertical_fit to the role (P2).
+    industry TEXT
 );
 
 -- Standing job 6: capital & research desk. Findings only.
@@ -217,11 +230,59 @@ CREATE TABLE IF NOT EXISTS suppression_list (
     added_at TEXT NOT NULL
 );
 
+-- Company exclusion list (MOD-06). Company-only — former employees contactable
+-- if they have since moved on. Checked against opportunity.company_normalized.
+CREATE TABLE IF NOT EXISTS company_exclusions (
+    company_normalized TEXT PRIMARY KEY,
+    reason TEXT,
+    added_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS touch_log (
     id INTEGER PRIMARY KEY,
     address TEXT NOT NULL,
     draft_ref TEXT,                    -- decision_packets.id
     touched_at TEXT NOT NULL
+);
+
+-- MOD-02: 1st-degree contact graph for warm-path outreach.
+CREATE TABLE IF NOT EXISTS contacts (
+    id INTEGER PRIMARY KEY,
+    name TEXT,
+    company TEXT,
+    email TEXT,
+    linkedin_url TEXT,
+    degree INTEGER NOT NULL DEFAULT 1,  -- 1st-degree only at launch
+    source TEXT NOT NULL,               -- linkedin_csv | alumni_csv | recruiter_registry | manual
+    -- Decision 5: alumni & recruiters overlap the LinkedIn connections dump, so
+    -- ingestion MERGES on linkedin_url and upgrades the source label (recruiter
+    -- > alumni > linkedin) rather than skipping — otherwise a warm recruiter is
+    -- indistinguishable from a random connection. These hold the richer fields.
+    title TEXT,                         -- recruiter/contact title
+    vertical_fit TEXT,                  -- recruiter registry: GTM/PropTech/etc.
+    notes TEXT,                         -- recruiter registry notes (surfaced in Slack)
+    position TEXT,                      -- connection/alumni current position
+    -- Contact enrichment (MOD-02): verified = provider confidence high enough to
+    -- email; unverified/none routes to a LinkedIn DM draft instead. enriched_at
+    -- drives the 30-day cache TTL so the same person isn't re-looked-up.
+    verified INTEGER NOT NULL DEFAULT 0,
+    enriched_at TEXT,
+    added_at TEXT NOT NULL
+);
+
+-- Contact-enrichment queue (MOD-02). A Tier A/B opportunity with no known warm
+-- contact enqueues its company here. A nightly job submits the batch to the
+-- EnrichmentPort (Clay); a retrieve job writes results into contacts and
+-- re-runs the warm-path attach. Batch/async by nature — Clay returns later.
+CREATE TABLE IF NOT EXISTS enrichment_queue (
+    id INTEGER PRIMARY KEY,
+    company_normalized TEXT NOT NULL,
+    role_hint TEXT,                     -- opportunity title, guides discovery
+    opportunity_id INTEGER,             -- which opp to re-attach on resolve
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending | submitted | done | failed
+    batch_id TEXT,
+    requested_at TEXT NOT NULL,
+    resolved_at TEXT
 );
 
 -- Correction taxonomy (Phase I T2-9): 8-code reason on every Revise action.
