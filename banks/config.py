@@ -29,9 +29,15 @@ class BanksConfig:
 
     slack_bot_token: str | None
     slack_channel_id: str | None
+    # #banks-jobs channel for Daily Attack Queue (MOD-05). Confirmed: C0BNGMYHFEF
+    slack_jobs_channel_id: str | None = None
     # App-level token (xapp-) for Socket Mode — receives button clicks over an
     # outbound WebSocket, no public endpoint. Distinct from the bot token.
     slack_app_token: str | None = None
+    # Single-approver lock (MOD-05): only this Slack user id may drive actions
+    # (Approve triggers a real Relay send — that authority is Josh's alone).
+    # None = allow any user (test workspaces, where Lesly is the only member).
+    approver_user_id: str | None = None
     timezone: str = "America/New_York"
     # Josh's own address — where detailed-financial drafts are emailed in full
     # (Slack only ever carries the redacted summary).
@@ -39,10 +45,32 @@ class BanksConfig:
     # Google Calendar (read-only, service account). CalendarPort live target.
     gcp_sa_key: str | None = None
     calendar_id: str | None = None
+    clay_api_key: str | None = None
+    # LLM key. Banks-namespaced ONLY — never the generic ANTHROPIC_API_KEY, so a
+    # shared environment can't leak Forced Action's key into Banks (wall + billing).
+    anthropic_api_key: str | None = None
     db_path: str = "banks.db"
     # Where drafts land when Slack isn't provisioned yet (T2 pending): a local
     # outbox so the whole pipeline is exercisable before the token exists.
     outbox_dir: str = "outbox"
+    # MOD-06 exclusion seed file — source of truth for who Banks must never
+    # contact. Loaded at startup; a Slack `exclude` command writes back here.
+    exclusions_file: str = "exclusions.txt"
+    # Outbound SMTP (Relay's mailer). Banks' OWN separate mailbox — never FA's.
+    # STARTTLS on 587. from_addr is Josh's sending identity for outreach.
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    # Resend API key — the alternative outbound sender. Kept on config (not read
+    # from os.environ at the call site) so ALL creds funnel through here, which is
+    # what the hard-wall test guards.
+    resend_api_key: str | None = None
+    # MOD-01 forwarded email intake — dedicated banks-intake@gmail.com mailbox.
+    # IMAP polled every 10 min; Josh forwards confirmation emails here.
+    intake_email: str | None = None
+    intake_email_password: str | None = None  # Gmail app password
 
     @property
     def slack_ready(self) -> bool:
@@ -53,11 +81,24 @@ def load_config() -> BanksConfig:
     return BanksConfig(
         slack_bot_token=os.environ.get("BANKS_SLACK_BOT_TOKEN"),
         slack_channel_id=os.environ.get("BANKS_CHANNEL_ID"),
+        slack_jobs_channel_id=os.environ.get("BANKS_JOBS_CHANNEL_ID", "C0BNGMYHFEF"),
         slack_app_token=os.environ.get("BANKS_SLACK_APP_TOKEN"),
+        approver_user_id=os.environ.get("BANKS_APPROVER_USER_ID"),
         josh_email=os.environ.get("BANKS_JOSH_EMAIL"),
         gcp_sa_key=os.environ.get("BANKS_GCP_SA_KEY"),
         calendar_id=os.environ.get("BANKS_CALENDAR_ID"),
         timezone=os.environ.get("BANKS_TIMEZONE", "America/New_York"),
+        clay_api_key=os.environ.get("BANKS_CLAY_API_KEY"),
+        anthropic_api_key=os.environ.get("BANKS_ANTHROPIC_API_KEY"),
         db_path=os.environ.get("BANKS_DB_PATH", "banks.db"),
         outbox_dir=os.environ.get("BANKS_OUTBOX_DIR", "outbox"),
+        exclusions_file=os.environ.get("BANKS_EXCLUSIONS_FILE", "exclusions.txt"),
+        smtp_host=os.environ.get("BANKS_SMTP_HOST"),
+        smtp_port=int(os.environ.get("BANKS_SMTP_PORT", "587")),
+        smtp_user=os.environ.get("BANKS_SMTP_USER"),
+        smtp_password=os.environ.get("BANKS_SMTP_PASSWORD"),
+        smtp_from=os.environ.get("BANKS_SMTP_FROM"),
+        resend_api_key=os.environ.get("BANKS_RESEND_API_KEY"),
+        intake_email=os.environ.get("BANKS_INTAKE_EMAIL"),
+        intake_email_password=os.environ.get("BANKS_INTAKE_EMAIL_PASSWORD"),
     )
