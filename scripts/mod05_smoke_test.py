@@ -54,11 +54,17 @@ def seed():
             (now_iso,),
         )
         cid = cur.lastrowid
-        # A relationship contact untouched 14+ days (Network Activation Lite)
+        # Network Activation Lite — tied to the Tier A company, untouched 40 days
         cur.execute(
             "INSERT INTO contacts (name, company, title, degree, source, added_at) VALUES "
-            "('Priya Nair','appfolio','VP Marketing',1,'alumni_csv',?)",
+            "('Priya Nair','secondnature','VP Marketing',1,'alumni_csv',?)",
             ((now - timedelta(days=40)).isoformat(),),
+        )
+        # No-Open-Role Lite — warm contact at a company with NO active opportunity
+        cur.execute(
+            "INSERT INTO contacts (name, company, title, degree, source, added_at) VALUES "
+            "('Kevin Zhao','latchel','Head of RevOps',1,'linkedin_csv',?)",
+            (now_iso,),
         )
 
     # Tier A opportunity with two pending lanes + send intents (so cards render)
@@ -118,12 +124,13 @@ def seed():
 seed()
 
 print("=== build_sections (dry preview) ===")
-for s in build_sections(db, now=now, career_facts=FACTS):
+from banks.chatport import FakeChatPort as _FakeChatPort
+for s in build_sections(db, now=now, career_facts=FACTS, chat=_FakeChatPort()):
     print(f"  [{s.category}] {s.title}")
     for ln in s.lines:
         print(f"      · {ln}")
     for c in s.cards:
-        print(f"      ▸ card: {c['kind']} — {c['subject']}")
+        print(f"      ▸ card: {c.kind} — {c.subject}")
 
 print("\n=== posting LIVE to test workspace ===")
 chat = LiveChatPort()
