@@ -4,7 +4,7 @@ On Approve of a Tier A opportunity, generates all applicable outreach lanes as
 separate Slack cards (each separately approvable by Josh). Tier B gets recruiter
 lane only — enough to stay visible without blasting a half-qualified opp.
 
-Decisions locked in BUILD_DECISIONS_MOD03-06.md:
+Decisions locked in docs/decisions/BUILD_DECISIONS_MOD03-06.md:
 - Tier A → full surround pack (HM/LinkedIn + warm intro + recruiter + employee + POV brief)
 - Tier B → recruiter lane only
 - Empty career-facts → refuse and report (no-embellishment constitution)
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 class SurroundPack:
     opportunity_id: int
     lanes: list[dict] = field(default_factory=list)
+    blocked: list[str] = field(default_factory=list)  # contacts skipped for exclusion (MOD-06)
 
 
 def generate_surround_pack(
@@ -53,6 +54,7 @@ def generate_surround_pack(
         draft_recruiter_lane,
         draft_warm_intro_ask,
     )
+    from .exclusion import is_target_excluded
     from .flow import propose
     from .governance import is_company_frozen
     from .refs import SendChannel
@@ -82,6 +84,21 @@ def generate_surround_pack(
     if is_company_frozen(db_path, company):
         return SurroundPack(opportunity_id=opportunity_id, lanes=[])
 
+    # MOD-06 draft-time gate: an excluded company (direct or corporate-variant)
+    # produces no pack at all — defensive backstop to the intake gate. One
+    # predicate (is_target_excluded), so coverage matches every other stage.
+    if is_target_excluded(db_path, company=company)[0]:
+        return SurroundPack(opportunity_id=opportunity_id, lanes=[], blocked=[company])
+
+    blocked_contacts: list[str] = []
+
+    def _allowed(contact: dict) -> bool:
+        """Person-excluded, or a conduit at an excluded firm → drop the lane."""
+        if is_target_excluded(db_path, contact=contact)[0]:
+            blocked_contacts.append(contact.get("name") or f"contact {contact.get('id')}")
+            return False
+        return True
+
     # Build the spec list: (lane_type, contact_id, draft, channel)
     # Only lanes that have a real target are included.
     lane_specs: list[tuple[str, int | None, object, object]] = []
@@ -98,7 +115,8 @@ def generate_surround_pack(
         if pursuit_mode in ("fractional", "consulting"):
             draft = draft_consulting_lane(title, company, career_facts)
             lane_specs.append(("consulting", None, draft, SendChannel.INTERNAL))
-        return _build_pack(db_path, opportunity_id, title, lane_specs, chat, propose)
+        return _build_pack(db_path, opportunity_id, title, lane_specs, chat, propose,
+                           blocked=blocked_contacts, company=company)
 
     # Tier A: full surround pack
     warm_contacts: list[dict] = []
@@ -116,6 +134,10 @@ def generate_surround_pack(
             (company, contact_id or -1),
         ).fetchall()
         warm_contacts.extend(dict(r) for r in others)
+
+    # MOD-06 Q10: drop person-excluded contacts and conduits at excluded firms
+    # before any lane is built — the person/indirect gate lives in selection.
+    warm_contacts = [c for c in warm_contacts if _allowed(c)]
 
     primary = warm_contacts[0] if warm_contacts else None
 
@@ -169,7 +191,8 @@ def generate_surround_pack(
     draft = draft_pov_brief(title, company, jd_summary, career_facts, llm)
     lane_specs.append(("pov_brief", None, draft, SendChannel.INTERNAL))
 
-    pack = _build_pack(db_path, opportunity_id, title, lane_specs, chat, propose)
+    pack = _build_pack(db_path, opportunity_id, title, lane_specs, chat, propose,
+                       blocked=blocked_contacts, company=company)
 
     # Register warm-intro state machine rows after lanes are created
     if intro_contact_id is not None:
@@ -185,11 +208,20 @@ def _build_pack(
     lane_specs: list,
     chat: "ChatPort",
     propose_fn,
+    blocked: list | None = None,
+    company: str | None = None,
 ) -> SurroundPack:
     """Phase 1: create all lane rows atomically. Phase 2: propose (Slack).
     Phase 3: set draft_refs atomically.
+
+    Each propose passes company + the lane's contact so `flow.propose` — the
+    every-draft chokepoint — enforces the exclusion wall live (MOD-06). The
+    up-front contact filter in the caller is the primary gate; this makes the
+    chokepoint a real backstop that fires on every outreach draft rather than
+    dead code. A DraftExcluded here (a pre-filter miss) skips that lane.
     """
-    from .store import transaction
+    from .exclusion import DraftExcluded
+    from .store import cursor, transaction
 
     now = datetime.now(timezone.utc).isoformat()
 
@@ -205,27 +237,42 @@ def _build_pack(
             )
             lane_ids.append(cur.lastrowid)
 
-    # Phase 2 — propose each lane (Slack posts; intentionally outside transaction)
-    proposed_refs: list[str] = []
-    for lane_id, (lane_type, _cid, draft, channel) in zip(lane_ids, lane_specs):
-        proposed = propose_fn(
-            db_path, _packet(title, lane_type), draft, chat, send_channel=channel
-        )
-        proposed_refs.append(str(proposed.ref))
+    # Phase 2 — propose each lane (Slack posts; intentionally outside transaction).
+    # Keep only (lane_id, ref) for lanes that actually posted, so a skipped lane
+    # doesn't misalign Phase 3.
+    proposed: list[tuple[int, str, str]] = []  # (lane_id, ref, lane_type)
+    blocked = list(blocked or [])
+    for lane_id, (lane_type, cid, draft, channel) in zip(lane_ids, lane_specs):
+        contact = None
+        if cid:
+            with cursor(db_path) as cur:
+                row = cur.execute("SELECT * FROM contacts WHERE id = ?", (cid,)).fetchone()
+                contact = dict(row) if row else None
+        try:
+            p = propose_fn(
+                db_path, _packet(title, lane_type), draft, chat,
+                send_channel=channel, company=company, contact=contact,
+            )
+        except DraftExcluded as exc:
+            blocked.append(f"{lane_type}: {exc}")
+            continue
+        proposed.append((lane_id, str(p.ref), lane_type))
 
-    # Phase 3 — set all draft_refs in one transaction
+    # Phase 3 — set draft_refs for the lanes that posted, in one transaction
     with transaction(db_path) as cur:
-        for lane_id, ref in zip(lane_ids, proposed_refs):
+        for lane_id, ref, _lt in proposed:
             cur.execute(
                 "UPDATE outreach_lanes SET draft_ref = ? WHERE id = ?",
                 (ref, lane_id),
             )
 
     lanes_created = [
-        {"lane_id": lid, "type": spec[0], "draft_ref": ref}
-        for lid, spec, ref in zip(lane_ids, lane_specs, proposed_refs)
+        {"lane_id": lid, "type": lt, "draft_ref": ref}
+        for lid, ref, lt in proposed
     ]
-    return SurroundPack(opportunity_id=opportunity_id, lanes=lanes_created)
+    return SurroundPack(
+        opportunity_id=opportunity_id, lanes=lanes_created, blocked=blocked
+    )
 
 
 def advance_warm_intro(

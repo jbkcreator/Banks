@@ -1,0 +1,19 @@
+# Banks exclusion list — the source of truth for who Banks must NEVER contact.
+# Loaded at startup (banks.exclusion.load_exclusions_from_file). Idempotent:
+# safe to re-run. Removal is deliberate — delete the line here.
+#
+# Format (one directive per line; `#` starts a comment):
+#   company: <name>                     -> excludes the company + name-variants
+#   person:  <full name>                -> excludes a person by name
+#   person:  https://linkedin.com/in/x  -> excludes a person by LinkedIn URL
+#
+# Company exclusion also blocks corporate variants by name-substring
+# ("Rent Solutions" also blocks "Rent Solutions Holdings/LLC/Group") and any
+# warm-intro conduit who works there. It does NOT block a former employee who
+# has since moved to a non-excluded company.
+#
+# NOTE: this ships with only the one confirmed default. Josh must supply the
+# full list (former employers, competitors, named individuals, conflicts)
+# before launch — see CLIENT_QUERIES item #12. Do not invent entries.
+
+company: Rent Solutions

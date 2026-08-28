@@ -1,32 +1,52 @@
-"""Fit scorer. Weights: Comp&Tier 35% / Vertical-Network 25% / Remote-Geo 20% / Pursuit-Mode 20%.
+"""Fit scorer. Weighted comp / vertical / geo / pursuit → 0–100 → tier.
 
-Comp: floor $150k base, sweet spot $220k+ (confirmed 2026-08-25).
+All tunable policy (weights, thresholds, comp band, vertical keyword sets, geo
+keywords, preferred modes) lives on ScoringConfig — one place, not literals
+scattered through the functions and duplicated in this docstring. Defaults are
+Josh's (locked 2026-08-25); a second user gets a different ScoringConfig, not a
+code fork. See DEFAULT_SCORING for the current values.
 """
 from __future__ import annotations
 
-# Tier thresholds (locked 2026-08-25)
-TIER_A_MIN = 75
-TIER_B_MIN = 50  # below this = Tier C
-
-# Comp scoring (locked 2026-08-25): floor $150k, sweet spot $220k+
-COMP_FLOOR_K = 150
-COMP_SWEET_K = 220
+from dataclasses import dataclass
 
 
-def assign_tier(score: int) -> str:
-    if score >= TIER_A_MIN:
+@dataclass(frozen=True)
+class ScoringConfig:
+    """Tunable scoring policy — the knobs that are person-specific, as data."""
+
+    tier_a_min: int = 75
+    tier_b_min: int = 50  # below this = Tier C
+    comp_floor_k: int = 150
+    comp_sweet_k: int = 220
+    # weights (sum 100)
+    weight_comp: int = 35
+    weight_vertical: int = 25
+    weight_geo: int = 20
+    weight_pursuit: int = 20
+    full_verticals: frozenset[str] = frozenset(
+        {"proptech", "real estate tech", "saas", "fintech", "financial technology"}
+    )
+    partial_verticals: frozenset[str] = frozenset(
+        {"hr tech", "hrtech", "insurtech", "legaltech", "edtech", "healthtech"}
+    )
+    geo_full: tuple[str, ...] = ("remote", "tampa", "florida", ", fl")
+    geo_hybrid: tuple[str, ...] = ("hybrid",)
+    preferred_modes: frozenset[str] = frozenset({"full_time", "contract_to_hire"})
+
+
+DEFAULT_SCORING = ScoringConfig()
+
+
+def assign_tier(score: int, cfg: ScoringConfig = DEFAULT_SCORING) -> str:
+    if score >= cfg.tier_a_min:
         return "A"
-    if score >= TIER_B_MIN:
+    if score >= cfg.tier_b_min:
         return "B"
     return "C"
 
 
-# Vertical fit — full/partial/zero (locked 2026-08-25)
-_FULL_VERTICALS = {"proptech", "real estate tech", "saas", "fintech", "financial technology"}
-_PARTIAL_VERTICALS = {"hr tech", "hrtech", "insurtech", "legaltech", "edtech", "healthtech"}
-
-
-def score_vertical(vertical: str | None) -> float:
+def score_vertical(vertical: str | None, cfg: ScoringConfig = DEFAULT_SCORING) -> float:
     """Return 0.0–1.0 vertical fit score.
 
     Empty/unknown → 0.5 (neutral, benefit of the doubt) to match score_comp's
@@ -36,45 +56,39 @@ def score_vertical(vertical: str | None) -> float:
     if not vertical or not vertical.strip():
         return 0.5
     v = vertical.lower()
-    if any(kw in v for kw in _FULL_VERTICALS):
+    if any(kw in v for kw in cfg.full_verticals):
         return 1.0
-    if any(kw in v for kw in _PARTIAL_VERTICALS):
+    if any(kw in v for kw in cfg.partial_verticals):
         return 0.5
     return 0.0
 
 
-# Geo scoring (locked 2026-08-25)
-def score_geo(location: str, remote: bool = False) -> float:
+def score_geo(location: str, remote: bool = False,
+              cfg: ScoringConfig = DEFAULT_SCORING) -> float:
     """Return 0.0–1.0 geo fit score."""
     if remote:
         return 1.0
     loc = location.lower()
-    if "remote" in loc:
+    if any(kw in loc for kw in cfg.geo_full):
         return 1.0
-    if "tampa" in loc or "florida" in loc or ", fl" in loc:
-        return 1.0
-    if "hybrid" in loc:
+    if any(kw in loc for kw in cfg.geo_hybrid):
         return 0.5
     return 0.0
 
 
-# Pursuit mode alignment (locked 2026-08-25)
-_PREFERRED_MODES = {"full_time", "contract_to_hire"}
+def score_pursuit_mode(mode: str, cfg: ScoringConfig = DEFAULT_SCORING) -> float:
+    return 1.0 if mode in cfg.preferred_modes else 0.5
 
 
-def score_pursuit_mode(mode: str) -> float:
-    return 1.0 if mode in _PREFERRED_MODES else 0.5
-
-
-def score_comp(base_k: float | None) -> float:
-    """Return 0.0–1.0 comp score. Floor $150k, sweet spot $220k+."""
+def score_comp(base_k: float | None, cfg: ScoringConfig = DEFAULT_SCORING) -> float:
+    """Return 0.0–1.0 comp score. Unknown → neutral 0.5."""
     if base_k is None:
         return 0.5  # unknown comp → neutral
-    if base_k < COMP_FLOOR_K:
+    if base_k < cfg.comp_floor_k:
         return 0.0
-    if base_k >= COMP_SWEET_K:
+    if base_k >= cfg.comp_sweet_k:
         return 1.0
-    return (base_k - COMP_FLOOR_K) / (COMP_SWEET_K - COMP_FLOOR_K)
+    return (base_k - cfg.comp_floor_k) / (cfg.comp_sweet_k - cfg.comp_floor_k)
 
 
 def compute_fit_score(
@@ -82,18 +96,20 @@ def compute_fit_score(
     vertical_score: float,  # 0.0–1.0
     geo_score: float,       # 0.0–1.0
     pursuit_score: float,   # 0.0–1.0
+    cfg: ScoringConfig = DEFAULT_SCORING,
 ) -> int:
-    """Weighted fit score 0–100."""
+    """Weighted fit score 0–100 (weights from cfg)."""
     raw = (
-        comp_score * 35
-        + vertical_score * 25
-        + geo_score * 20
-        + pursuit_score * 20
+        comp_score * cfg.weight_comp
+        + vertical_score * cfg.weight_vertical
+        + geo_score * cfg.weight_geo
+        + pursuit_score * cfg.weight_pursuit
     )
     return round(raw)
 
 
-def score_role(comp_k, industry, location, pursuit_mode):
+def score_role(comp_k, industry, location, pursuit_mode,
+               cfg: ScoringConfig = DEFAULT_SCORING):
     """Score one role end to end. The single home for the fit→tier→hold decision
     (was copy-pasted across intake/manual_intake/enrich).
 
@@ -102,10 +118,11 @@ def score_role(comp_k, industry, location, pursuit_mode):
     row forever; comp stays neutral (0.5) when unknown.
     """
     fit = compute_fit_score(
-        score_comp(comp_k),
-        score_vertical(industry),
-        score_geo(location or ""),
-        score_pursuit_mode(pursuit_mode),
+        score_comp(comp_k, cfg),
+        score_vertical(industry, cfg),
+        score_geo(location or "", cfg=cfg),
+        score_pursuit_mode(pursuit_mode, cfg),
+        cfg,
     )
     needs_enrichment = not (industry and str(industry).strip())
-    return fit, assign_tier(fit), needs_enrichment
+    return fit, assign_tier(fit, cfg), needs_enrichment

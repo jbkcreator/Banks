@@ -17,7 +17,7 @@ from .calendarport import CalendarPort, FakeCalendarPort, GoogleCalendarPort
 from .chatport import ChatPort, FakeChatPort, LiveChatPort
 from .fileport import FakeFilePort, FilePort, GoogleDriveFilePort
 from .llmport import ClaudeLLMPort, FakeLLMPort, LLMPort
-from .mailer import FakeMailer, Mailer, ResendMailer
+from .mailer import FakeMailer, Mailer, load_mailer
 
 
 @dataclass
@@ -60,6 +60,13 @@ class Container:
         resolved_db = db_path or cfg.db_path
         init_db(resolved_db)
 
+        # MOD-06: seed the exclusion wall from its source-of-truth file at
+        # startup, so the DB the gates check always reflects exclusions.txt.
+        # Guarded: a missing file is fine (nothing to seed), never blocks boot.
+        if Path(cfg.exclusions_file).exists():
+            from .exclusion import load_exclusions_from_file
+            load_exclusions_from_file(resolved_db, cfg.exclusions_file)
+
         # Chat — required for Banks to function.
         if not cfg.slack_ready:
             raise ValueError(
@@ -67,11 +74,10 @@ class Container:
             )
         chat = LiveChatPort(cfg)
 
-        # Mailer — required for relay.
-        resend_key = os.environ.get("BANKS_RESEND_API_KEY")
-        if not resend_key:
-            raise ValueError("BANKS_RESEND_API_KEY not set")
-        mailer = ResendMailer(resend_key)
+        # Mailer — required for relay. One selector (mailer.load_mailer): SMTP if
+        # configured, else Resend. Previously hardcoded Resend, so SMTP was dead
+        # in prod; now both are reachable through the single policy.
+        mailer = load_mailer(cfg)
 
         # LLM — optional, falls back to Fake (pipeline still runs, extracts are stubbed).
         llm: LLMPort

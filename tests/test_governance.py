@@ -317,28 +317,32 @@ def test_mark_lane_sent(db_path):
 # --- new: network_activation_due ---
 
 def test_network_activation_due_returns_untouched(db_path):
+    # Contact must be tied to an active Tier A/B company (grill Q2 decision).
+    _opp(db_path, company="acme")
     now = dt.datetime.now(dt.timezone.utc).isoformat()
     with cursor(db_path) as cur:
         cur.execute(
-            "INSERT INTO contacts (name, email, degree, source, added_at) "
-            "VALUES ('Alice', 'a@x.com', 1, 'linkedin_csv', ?)",
+            "INSERT INTO contacts (name, email, company, degree, source, added_at) "
+            "VALUES ('Alice', 'a@x.com', 'acme', 1, 'linkedin_csv', ?)",
             (now,),
         )
-    contacts = network_activation_due(db_path, "2026-08-25", limit=3)
+    contacts = network_activation_due(db_path, "2026-08-25", limit=5)
     assert len(contacts) >= 1
 
 
 def test_network_activation_ranks_decision_makers_first(db_path):
+    # Both contacts tied to active Tier A company so the ranking can be tested.
+    _opp(db_path, company="rankco")
     now = dt.datetime.now(dt.timezone.utc).isoformat()
     with cursor(db_path) as cur:
         cur.execute(
-            "INSERT INTO contacts (name, title, degree, source, added_at) "
-            "VALUES ('Bob', 'VP Sales', 1, 'linkedin_csv', ?)",
+            "INSERT INTO contacts (name, title, company, degree, source, added_at) "
+            "VALUES ('Bob', 'VP Sales', 'rankco', 1, 'linkedin_csv', ?)",
             (now,),
         )
         cur.execute(
-            "INSERT INTO contacts (name, title, degree, source, added_at) "
-            "VALUES ('Carol', 'SDR', 1, 'linkedin_csv', ?)",
+            "INSERT INTO contacts (name, title, company, degree, source, added_at) "
+            "VALUES ('Carol', 'SDR', 'rankco', 1, 'linkedin_csv', ?)",
             (now,),
         )
     contacts = network_activation_due(db_path, "2026-08-25", limit=5)

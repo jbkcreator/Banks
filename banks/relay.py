@@ -109,7 +109,7 @@ def _send_time_excluded(db_path: str, ref: str) -> bool:
     queued. Property-side / internal intents with no lane aren't job outreach,
     so they pass through untouched.
     """
-    from .exclusion import is_company_excluded
+    from .exclusion import is_target_excluded
     with cursor(db_path) as cur:
         lane = cur.execute(
             "SELECT opportunity_id, contact_id FROM outreach_lanes WHERE draft_ref = ?",
@@ -124,8 +124,19 @@ def _send_time_excluded(db_path: str, ref: str) -> bool:
                 (lane["opportunity_id"],),
             ).fetchone()
             company = opp["company_normalized"] if opp else None
+        contact = None
+        if lane["contact_id"]:
+            contact = cur.execute(
+                "SELECT name, linkedin_url FROM contacts WHERE id = ?",
+                (lane["contact_id"],),
+            ).fetchone()
 
-    return bool(company and is_company_excluded(db_path, company))
+    # One predicate — same coverage as intake + surround (draft-time). This is
+    # the send-time backstop for the post-queue race (block at draft AND send).
+    excluded, _reason = is_target_excluded(
+        db_path, company=company, contact=dict(contact) if contact else None
+    )
+    return excluded
 
 
 def _lookup_lane(db_path: str, draft_ref: str) -> dict | None:
@@ -163,7 +174,7 @@ def relay_run(db_path: str, mailer: Mailer, from_addr: str = DEFAULT_FROM) -> Re
     for intent in rows:
         ref = intent["draft_ref"]
 
-        # Send-time gate (MOD-06): suppress anything excluded after queuing.
+        # Send-time gate (MOD-06 Q1): suppress anything excluded after queuing.
         if _send_time_excluded(db_path, ref):
             suppress_intent(db_path, ref)
             with cursor(db_path) as cur:
@@ -217,3 +228,14 @@ def relay_run(db_path: str, mailer: Mailer, from_addr: str = DEFAULT_FROM) -> Re
             failed.append(ref)
 
     return RelayResult(sent=sent, skipped=skipped, failed=failed, blocked=blocked)
+
+
+def dispatch(db_path: str, from_addr: str = DEFAULT_FROM) -> RelayResult:
+    """Production entry point for the scheduled relay_dispatch job (jobs.py).
+
+    Selects the live mailer here — R-D1 means only relay.py/mailer.py may
+    import the send credential, so the mailer choice can't live in jobs.py,
+    which is agent-side and shared with every other standing job.
+    """
+    from .mailer import load_mailer
+    return relay_run(db_path, load_mailer(), from_addr)

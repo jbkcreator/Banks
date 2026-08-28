@@ -12,7 +12,7 @@ for line in (root / ".env").read_text(encoding="utf-8").splitlines():
     line = line.strip()
     if line and not line.startswith("#") and "=" in line:
         k, v = line.split("=", 1)
-        os.environ[k] = v
+        os.environ[k] = v.split("#", 1)[0].strip()  # strip inline comments
 os.environ["BANKS_DB_PATH"] = str(root / "banks_live.db")
 
 from banks.socket_listener import run  # noqa: E402
