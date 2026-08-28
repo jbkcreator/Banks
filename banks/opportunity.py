@@ -141,6 +141,7 @@ def record_opportunity(
     contact_id: int | None = None,
     needs_enrichment: bool = False,
     industry: str | None = None,
+    status: str = "sourced",
 ) -> int:
     """Insert an opportunity row. MOD-01 columns (tier, pursuit_mode,
     company_normalized, source_url, needs_enrichment) are keyword-only so
@@ -152,8 +153,8 @@ def record_opportunity(
             "INSERT INTO opportunities "
             "(title, source, criteria_match_score, status, tier, pursuit_mode, "
             " company_normalized, source_url, contact_id, needs_enrichment, industry) "
-            "VALUES (?, ?, ?, 'sourced', ?, ?, ?, ?, ?, ?, ?)",
-            (title, source, match_score, tier, pursuit_mode,
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (title, source, match_score, status, tier, pursuit_mode,
              company_normalized, source_url, contact_id,
              1 if needs_enrichment else 0, industry),
         )

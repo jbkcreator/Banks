@@ -5,9 +5,8 @@ for line in (root / ".env").read_text(encoding="utf-8").splitlines():
     line = line.strip()
     if line and not line.startswith("#") and "=" in line:
         k, v = line.split("=", 1); os.environ[k] = v
-DB = str(root / "banks_live.db")
+DB = os.environ.get("BANKS_DB_PATH") or str(root / "banks_live.db")
 os.environ["BANKS_DB_PATH"] = DB
-if os.path.exists(DB): os.remove(DB)
 
 DL = pathlib.Path(r"C:\Users\Lesly\Downloads")
 from banks.store import init_db, cursor

@@ -167,3 +167,36 @@ def test_contact_no_downgrade(db_path):
     with cursor(db_path) as cur:
         r = cur.execute("SELECT source FROM contacts").fetchone()
     assert r["source"] == "recruiter_registry"
+
+
+# --- PR #7 regression: status handling ----------------------------------------
+
+def test_closed_rows_recorded_not_surfaced(db_path):
+    """REJECTED/WITHDRAWN/ARCHIVED rows record for dedup but never surface."""
+    rows = [
+        {"Job Title": "VP Sales", "Company Name": "ClosedCo",
+         "Location": "Remote", "Job URL": "https://x.com/c1",
+         "Applied Date": "2026-01-01", "Status": "REJECTED", "job_type": "Full-time"},
+        {"Job Title": "VP Sales", "Company Name": "WithdrawnCo",
+         "Location": "Remote", "Job URL": "https://x.com/c2",
+         "Applied Date": "2026-01-01", "Status": "WITHDRAWN", "job_type": "Full-time"},
+    ]
+    chat = FakeChatPort()
+    res = ingest_simplify(db_path, FakeCSVPort(rows), "x", chat)
+    assert res.ingested == 2
+    assert res.surfaced == 0
+    assert chat.posts == []
+    with cursor(db_path) as cur:
+        statuses = [r["status"] for r in cur.execute("SELECT status FROM opportunities").fetchall()]
+    assert all(s == "closed" for s in statuses)
+
+
+def test_applied_rows_recorded_with_correct_status(db_path):
+    """APPLIED rows are ingested and their status stored as 'applied'."""
+    rows = [{"Job Title": "CRO", "Company Name": "AppliedCo",
+             "Location": "Remote", "Job URL": "https://x.com/a1",
+             "Applied Date": "2026-01-01", "Status": "APPLIED", "job_type": "Full-time"}]
+    ingest_simplify(db_path, FakeCSVPort(rows), "x", FakeChatPort())
+    with cursor(db_path) as cur:
+        row = cur.execute("SELECT status FROM opportunities").fetchone()
+    assert row["status"] == "applied"
