@@ -60,6 +60,65 @@ class CareerFacts:
         return not any([self.identity, self.experience, self.skills, self.education, self.ventures])
 
 
+# Map career-facts.md section headers → CareerFacts fields. Best-effort: an empty
+# or missing file yields CareerFacts() (same as before this was wired), but a
+# filled resume now actually populates the facts the drafters + revisions use.
+_FACTS_SECTIONS = {
+    "identity": "identity",
+    "experience": "experience",
+    "skills": "skills",
+    "education": "education",
+    "education / credentials": "education",
+    "ventures": "ventures",
+    "ventures / holdings": "ventures",
+    "what josh is looking for": "seeking",
+    "what josh is looking for (opportunity criteria)": "seeking",
+}
+_STR_FIELDS = {"identity", "seeking"}
+
+
+def load_career_facts(path: str = "banks/memory/career-facts.md") -> "CareerFacts":
+    """Parse career-facts.md into CareerFacts. Empty/missing → CareerFacts().
+
+    Lines under a `## Section` header become that field's value; HTML comment
+    placeholders (`<!-- ... -->`) and blank lines are ignored. Multi-line
+    sections become a tuple (or joined string for identity/seeking).
+    """
+    import os
+
+    if not os.path.exists(path):
+        return CareerFacts()
+    try:
+        raw = open(path, encoding="utf-8").read()
+    except OSError:
+        return CareerFacts()
+
+    buckets: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in raw.splitlines():
+        s = line.strip()
+        if s.startswith("## "):
+            key = s[3:].strip().lower()
+            current = _FACTS_SECTIONS.get(key)
+            continue
+        if current is None:
+            continue
+        if not s or s.startswith("<!--") or s.startswith(">") or s.startswith("#"):
+            continue
+        buckets.setdefault(current, []).append(s.lstrip("-* ").strip())
+
+    kwargs: dict = {}
+    for field_name, vals in buckets.items():
+        vals = [v for v in vals if v]
+        if not vals:
+            continue
+        if field_name in _STR_FIELDS:
+            kwargs[field_name] = " ".join(vals)
+        else:
+            kwargs[field_name] = tuple(vals)
+    return CareerFacts(**kwargs)
+
+
 @dataclass(frozen=True)
 class OpportunityCriteria:
     """Placeholder defaults — real criteria/sources come from Q29."""

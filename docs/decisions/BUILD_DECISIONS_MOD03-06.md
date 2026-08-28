@@ -176,6 +176,24 @@ is the production cutover. Tracked in CLIENT_QUERIES_V2 #2.
 1. **Snooze duration** — next-morning default, or pick the delay each time?
 2. **Timezone** — is 7:30 **ET** Josh's morning?
 
+**Added 2026-08-28 (grill):**
+- **Slack CSV upload (Simplify only):** Josh drags a Simplify export into
+  `#banks-jobs`; Banks downloads it (needs `files:read` scope), runs `ingest_simplify`,
+  and posts a terse receipt (rows / new / dup / excluded / held). Items flow into
+  the normal queue — no card dump on upload. Gated single-approver + jobs-channel +
+  skip bot files; clear error on a bad file. LoopCV / header auto-detect deferred
+  until a sample export.
+- **Revision reworked — button-driven pending-slot (replaces broken thread-reply):**
+  Slack threads one level deep, so a reply's `thread_ts` is the summary root, not
+  the card — the old thread-targeting never fired. Now: tap **✍️ Revise** on a card
+  → a per-user `pending_revisions` slot is set (last-tap-wins, 15-min expiry) →
+  the user's next message is the instruction. Precedence: **halt → pending-revision
+  → command → ignore**. `cancel`/`nevermind` clears the slot. Feedback: card shows a
+  "Revising — reply with your change" hint on tap; a confirmation on apply; an
+  explicit "would add a claim not in your resume" on embellishment-guard rejection.
+  Also **fixes the no-embellishment hole**: `load_career_facts()` now feeds the real
+  resume into `apply_revision` (was passing empty `CareerFacts()`).
+
 ---
 
 ## MOD-06 — Adversarial Exclusion & Launch Staging

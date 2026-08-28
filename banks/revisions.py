@@ -14,6 +14,7 @@ cannot become embellishment.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import re
 from typing import TYPE_CHECKING
 
@@ -45,6 +46,55 @@ _REVISE_ROUTER_SYSTEM = (
     '{"intent": "revise|question|none", "instruction": "<the edit or null>"}. '
     "revise = asks to change the draft; question = asks something; none = neither."
 )
+
+
+_REVISION_TTL_MIN = 15
+
+
+def set_pending_revision(db_path: str, user_id: str, draft_ref: str) -> None:
+    """Tap Revise → this user's next message is the instruction for draft_ref.
+
+    One slot per user, last-tap-wins (INSERT OR REPLACE): tapping Revise on a
+    second card before typing simply retargets to the second — what a human
+    expects.
+    """
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    with cursor(db_path) as cur:
+        cur.execute(
+            "INSERT OR REPLACE INTO pending_revisions (user_id, draft_ref, set_at) "
+            "VALUES (?, ?, ?)",
+            (user_id, str(draft_ref), now),
+        )
+
+
+def get_pending_revision(db_path: str, user_id: str, now: _dt.datetime | None = None,
+                         ttl_min: int = _REVISION_TTL_MIN) -> str | None:
+    """Return the pending draft_ref for this user if set and not expired.
+
+    Expired slots are cleared and None returned — a message typed long after a
+    forgotten Revise tap should not silently edit a stale draft.
+    """
+    with cursor(db_path) as cur:
+        row = cur.execute(
+            "SELECT draft_ref, set_at FROM pending_revisions WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    if not row:
+        return None
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    try:
+        set_at = _dt.datetime.fromisoformat(row["set_at"])
+    except ValueError:
+        set_at = now
+    if (now - set_at) > _dt.timedelta(minutes=ttl_min):
+        clear_pending_revision(db_path, user_id)
+        return None
+    return row["draft_ref"]
+
+
+def clear_pending_revision(db_path: str, user_id: str) -> None:
+    with cursor(db_path) as cur:
+        cur.execute("DELETE FROM pending_revisions WHERE user_id = ?", (user_id,))
 
 
 def is_revision_context(db_path: str, card_ts: str) -> str | None:

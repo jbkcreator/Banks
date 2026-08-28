@@ -446,3 +446,12 @@ CREATE TABLE IF NOT EXISTS person_exclusions (
     reason TEXT,
     added_at TEXT NOT NULL
 );
+
+-- MOD-05 revision: one pending "awaiting instruction" slot per user (button-driven,
+-- since Slack one-level threading can't target a card by reply thread_ts). Tap
+-- Revise → slot set; the user's next message is consumed as the instruction.
+CREATE TABLE IF NOT EXISTS pending_revisions (
+    user_id TEXT PRIMARY KEY,
+    draft_ref TEXT NOT NULL,
+    set_at TEXT NOT NULL
+);

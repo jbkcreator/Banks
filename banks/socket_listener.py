@@ -27,7 +27,14 @@ from .commands import handle_command, route
 from .config import BanksConfig, load_config
 from .halt import is_halt_command, set_halt
 from .queue_actions import mark_done, skip_item, snooze_item
-from .revisions import apply_revision, classify_revision, is_revision_context
+from .revisions import (
+    apply_revision,
+    clear_pending_revision,
+    get_pending_revision,
+    set_pending_revision,
+)
+
+_CANCEL_WORDS = {"cancel", "nevermind", "never mind", "stop revising"}
 
 
 def is_authorized(cfg: BanksConfig, user_id: str) -> bool:
@@ -40,17 +47,19 @@ def is_authorized(cfg: BanksConfig, user_id: str) -> bool:
     return cfg.approver_user_id is None or user_id == cfg.approver_user_id
 
 
-def classify_incoming(text: str, has_pending_thread: bool) -> str:
+def classify_incoming(text: str, has_pending_revision: bool) -> str:
     """Listener precedence (Q23), pure so it's unit-testable without Slack.
 
     (1) halt/kill ALWAYS first — a shadowed kill switch is a broken kill switch.
-    (2) a reply on a pending draft thread → revise.
-    (3) any other non-empty top-level message → command.
+    (2) if the user has a pending Revise (tapped the button) → revise; their
+        next message is the instruction. Button-driven, since Slack one-level
+        threading can't target a card by reply thread_ts.
+    (3) any other non-empty message → command.
     (4) otherwise ignore.
     """
     if is_halt_command(text or ""):
         return "halt"
-    if has_pending_thread:
+    if has_pending_revision:
         return "revise"
     if (text or "").strip():
         return "command"
@@ -84,6 +93,20 @@ def _handle_action(cfg: BanksConfig, web, payload: dict) -> None:
         button = ButtonAction(action_id)
     except ValueError:
         return  # not one of ours
+
+    # Revise (Q4): the button identifies the exact card, so we capture the draft
+    # in a per-user pending slot; the user's NEXT message is the instruction.
+    # (Replaces the broken thread-reply targeting — Slack threads one level deep.)
+    if button is ButtonAction.REVISE:
+        set_pending_revision(cfg.db_path, user_id, draft_ref)
+        if channel and ts:
+            _update_card(
+                web, channel, ts,
+                "✍️ *Revising* — reply with your change (e.g. `shorter`, "
+                "`less formal`, `stronger hook`). Say `cancel` to stop.",
+                draft_ref, user_id,
+            )
+        return
 
     # is_outbound is read from the draft's send_intent (R-D3), set at draft time
     # by propose(). Approve on an email:* intent enqueues Relay; none:internal
@@ -132,15 +155,10 @@ def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
     text = event.get("text") or (event.get("message") or {}).get("text") or ""
     user_id = event.get("user", "")
     channel = event.get("channel")
-    # A reply carries thread_ts (the parent = the card); a top-level message doesn't.
-    parent_ts = event.get("thread_ts")
-    ref = is_revision_context(cfg.db_path, parent_ts) if parent_ts else None
-
-    verdict = classify_incoming(text, ref is not None)
 
     # HALT FIRST, on the broadest surface — any human message including edits.
     # (Skip the bot's own messages so a halt-confirmation can't re-trigger halt.)
-    if verdict == "halt":
+    if is_halt_command(text):
         if is_bot:
             return
         set_halt(reason=f"operator command: '{text.strip()}'")
@@ -150,31 +168,121 @@ def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
         )
         return
 
-    # Non-halt verdicts ignore the bot's own messages + non-plain subtypes
-    # (edits, joins, etc.) — a revision loop otherwise is inevitable.
+    # Non-halt: ignore the bot's own messages + non-plain subtypes (edits, joins,
+    # etc.) — a revision/command loop otherwise is inevitable.
     if is_bot or event.get("subtype"):
         return
 
+    # A pending Revise (Josh-only) captures this message as the instruction.
+    pending = (get_pending_revision(cfg.db_path, user_id)
+               if is_authorized(cfg, user_id) else None)
+
+    verdict = classify_incoming(text, pending is not None)
+
     if verdict == "revise":
-        # Revise touches a draft → Josh-only (Q13).
-        if not is_authorized(cfg, user_id):
+        if text.strip().lower() in _CANCEL_WORDS:
+            clear_pending_revision(cfg.db_path, user_id)
+            if channel:
+                web.chat_postMessage(channel=channel, text="✍️ Revision cancelled.")
             return
-        intent, instruction = classify_revision(text, llm)
-        if intent != "revise":
-            return  # silent on questions / chatter in a draft thread
-        from .opportunity import CareerFacts
-        res = apply_revision(cfg.db_path, ref, instruction, CareerFacts(), llm, chat)
-        msg = ("✍️ Revised in place." if res.get("ok")
-               else f"✍️ Couldn't revise: {res.get('reason')}")
+        from .opportunity import load_career_facts
+        res = apply_revision(cfg.db_path, pending, text, load_career_facts(), llm, chat)
+        clear_pending_revision(cfg.db_path, user_id)
+        if res.get("ok"):
+            msg = f"✍️ Revised: {text.strip()}"
+        elif res.get("reason") == "embellishment":
+            msg = "✍️ Skipped — that would add a claim not in your resume."
+        elif res.get("reason") == "no_pending_draft":
+            msg = "✍️ No draft awaiting revision — tap *Revise* on a card first."
+        else:
+            msg = f"✍️ Couldn't revise: {res.get('reason')}"
         if channel:
-            web.chat_postMessage(channel=channel, thread_ts=parent_ts, text=msg)
+            web.chat_postMessage(channel=channel, text=msg)
         return
 
-    if verdict == "command":  # top-level on-demand retrieval
+    if verdict == "command":  # on-demand retrieval
         reply = handle_command(cfg.db_path, route(cfg.db_path, text, llm))
         if channel and reply:
             web.chat_postMessage(channel=channel, text=reply)
     # verdict == "ignore" → do nothing
+
+
+# ---------------------------------------------------------------------------
+# Slack CSV upload (MOD-01) — Josh drags a Simplify export into #banks-jobs.
+# Requires the `files:read` scope on the Banks Slack app (CTO/client item).
+# ---------------------------------------------------------------------------
+
+def _is_csv(f: dict) -> bool:
+    return (f.get("filetype") == "csv"
+            or (f.get("name") or "").lower().endswith(".csv"))
+
+
+def should_ingest_file(cfg: BanksConfig, event: dict) -> bool:
+    """Pure gate: ingest a dropped file only if it's Josh's CSV in the jobs
+    channel (single-approver + channel lock + skip bot files)."""
+    if event.get("bot_id"):
+        return False
+    files = event.get("files") or []
+    if not files or not any(_is_csv(f) for f in files):
+        return False
+    if not is_authorized(cfg, event.get("user", "")):
+        return False
+    if event.get("channel") != cfg.slack_jobs_channel_id:
+        return False
+    return True
+
+
+def _handle_file(cfg: BanksConfig, web, chat, event: dict) -> None:
+    """Download a dropped Simplify CSV and run intake; post a terse receipt."""
+    import os
+    import tempfile
+
+    from .csvport import LiveCSVPort
+    from .intake import ingest_simplify
+    from .slackfiles import download
+
+    channel = event.get("channel")
+    files = event.get("files") or []
+    # A file from Josh in the jobs channel that ISN'T a CSV → tell him.
+    if (not event.get("bot_id")
+            and is_authorized(cfg, event.get("user", ""))
+            and channel == cfg.slack_jobs_channel_id
+            and files and not any(_is_csv(f) for f in files)):
+        web.chat_postMessage(channel=channel,
+                             text="📎 That's not a CSV — drop a Simplify export (.csv).")
+        return
+
+    if not should_ingest_file(cfg, event):
+        return
+
+    for f in files:
+        if not _is_csv(f):
+            continue
+        name = f.get("name") or "export.csv"
+        url = f.get("url_private_download") or f.get("url_private")
+        if not url:
+            info = web.files_info(file=f.get("id"))
+            url = (info.get("file") or {}).get("url_private_download")
+        try:
+            data = download(url, cfg.slack_bot_token or "")
+            tmp = os.path.join(tempfile.mkdtemp(), name)
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+            res = ingest_simplify(cfg.db_path, LiveCSVPort(), tmp, chat)
+        except Exception as exc:  # parse/download failure → clear message, no crash
+            web.chat_postMessage(
+                channel=channel,
+                text=f"⚠️ Couldn't import *{name}* — is this a Simplify export? ({exc})",
+            )
+            continue
+        total = res.ingested + res.duplicates + res.excluded
+        web.chat_postMessage(
+            channel=channel,
+            text=(f"📥 Imported *{name}* — {total} rows: {res.ingested} new, "
+                  f"{res.duplicates} duplicates, {res.excluded} excluded. "
+                  f"{res.held} held for enrichment; Tier A/B appear in your queue "
+                  f"as industry resolves."),
+        )
 
 
 def run(cfg: BanksConfig | None = None) -> None:
@@ -203,8 +311,14 @@ def run(cfg: BanksConfig | None = None) -> None:
             event = (req.payload.get("event") or {})
             if event.get("type") != "message":
                 return
-            # Precedence (halt→revise→command→ignore) lives in _handle_message
-            # via classify_incoming — the one place the rule is defined.
+            # A dropped file (Simplify CSV, MOD-01) → intake; otherwise the
+            # halt→revise→command precedence in _handle_message.
+            if event.get("files"):
+                try:
+                    _handle_file(cfg, web, chat, event)
+                except Exception as exc:
+                    print(f"[listener] file error: {exc!r}", flush=True)
+                return
             try:
                 _handle_message(cfg, web, llm, chat, event)
             except Exception as exc:

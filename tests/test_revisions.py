@@ -132,19 +132,19 @@ def test_apply_revision_no_pending_draft(db_path):
 
 def test_precedence_halt_first():
     # even inside a pending thread, a halt phrase wins
-    assert classify_incoming("stop banks", has_pending_thread=True) == "halt"
+    assert classify_incoming("stop banks", has_pending_revision=True) == "halt"
 
 
 def test_precedence_revise_in_pending_thread():
-    assert classify_incoming("make it shorter", has_pending_thread=True) == "revise"
+    assert classify_incoming("make it shorter", has_pending_revision=True) == "revise"
 
 
 def test_precedence_command_top_level():
-    assert classify_incoming("who do I know at Acme", has_pending_thread=False) == "command"
+    assert classify_incoming("who do I know at Acme", has_pending_revision=False) == "command"
 
 
 def test_precedence_ignore_empty():
-    assert classify_incoming("   ", has_pending_thread=False) == "ignore"
+    assert classify_incoming("   ", has_pending_revision=False) == "ignore"
 
 
 def test_single_approver_lock():
