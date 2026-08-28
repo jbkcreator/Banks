@@ -29,7 +29,18 @@ STANDING_JOBS = [
     StandingJob("weekly_scorecard", "weekly", fire_time=time(17, 0), weekday=4),  # Friday
     StandingJob("quarterly_rate_optimizer", "quarterly"),
     StandingJob("weekly_opportunity_cost_meter", "weekly", fire_time=time(17, 0), weekday=4),
+    # MOD-01 forwarded email intake — polls banks-intake@gmail.com every 10 min.
+    StandingJob("email_intake_poll", "interval_10min"),
 ]
+
+
+def due_jobs_interval(now: datetime, timezone_name: str = "America/New_York") -> list[StandingJob]:
+    """Includes interval jobs (every N minutes) alongside the existing time-keyed jobs."""
+    due = due_jobs(now, timezone_name)
+    for job in STANDING_JOBS:
+        if job.cadence == "interval_10min" and now.minute % 10 == 0:
+            due.append(job)
+    return due
 
 
 def due_jobs(now: datetime, timezone_name: str = "America/New_York") -> list[StandingJob]:

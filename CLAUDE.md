@@ -63,9 +63,9 @@ approval. No autonomous sends, no standing orders.
 
 | Module | Scope | Status |
 |---|---|---|
-| MOD-01 | Application intake, dedup, fit scoring, tiering | **Build-complete, e2e-tested, live** |
+| MOD-01 | Application intake, dedup, fit scoring, tiering | **Build-complete, e2e-tested, live. Forwarded email listener built (LiveImapEmailPort + scheduler job email_intake_poll every 10 min). Needs BANKS_INTAKE_EMAIL + BANKS_INTAKE_EMAIL_PASSWORD in .env.** |
 | MOD-02 | Contact resolution, enrichment, warm-path graph | **Build-complete, e2e-tested; Clay enrichment needs paid plan** |
-| MOD-03 | 7 distribution lanes & surround workflow | **Build-complete, code-reviewed, 460 tests green** |
+| MOD-03 | 7 distribution lanes & surround workflow | **Build-complete, code-reviewed. LinkedIn DM deep-link handoff wired into linkedin + employee lanes. 490 tests green.** |
 | MOD-04 | Follow-up cadence, governance, collision ledger | **Build-complete, code-reviewed, 460 tests green** |
 | MOD-05 | Slack command & control (Daily Attack Queue) | **Build-complete; Approve/Skip/Snooze/Mark-done + Revise ALL proven LIVE in test ws (2026-08-28). Event Subscriptions enabled. Network Activation Lite (Tier A/B-tied contacts, channel suggestion) + No-Open-Role Lite (consulting pitch for warm-contact companies with no active opp) both built + tested.** |
 | MOD-06 | Adversarial exclusion & launch staging | **Build-complete; two-gate exclusion (intake + send-time); person/company/indirect/conduit exclusion; Slack CSV upload proven LIVE (2026-08-28). 473 tests green. Pending: Josh's full exclusion list.** |
@@ -183,14 +183,20 @@ approval. No autonomous sends, no standing orders.
   `load_exclusions_from_file`) — raw `init_db` skips exclusion seeding. Already
   correct in the listener; test scripts need the same.
 
+### Remaining spec gap
+- **Hunter.io / Anymail Finder** — spec names these as enrichment providers.
+  No code exists. Clay manual-CSV is the interim. Needs paid API key from Josh
+  before a `LiveHunterPort` is worth building.
+
 ### Client-gated (waiting on Josh / CTO)
 - **`career-facts.md` is empty** — Josh's resume facts must be added before any
   outreach draft is useful. Biggest content blocker.
 - **Full exclusion list** — only "Rent Solutions" seeded in `exclusions.txt`.
 - **Paid Clay / Hunter.io** — for hands-off contact enrichment. Manual CSV
   (`ManualCSVEnrichmentPort`) is $0 interim.
-- **Josh's Gmail app password** — for live email send via `SmtpMailer`. Zero real
-  emails sent yet; `SmtpMailer` is built and reachable in prod.
+- **Josh's Gmail app password (outbound)** — for live email send via `SmtpMailer`.
+- **banks-intake@gmail.com app password** — for `LiveImapEmailPort` (email intake).
+  Set `BANKS_INTAKE_EMAIL` + `BANKS_INTAKE_EMAIL_PASSWORD` in `.env`.
 - **LoopCV export** — `parse_loopcv_row` is built but dormant; needs Josh's real
   export file to confirm column names.
 
@@ -209,7 +215,7 @@ approval. No autonomous sends, no standing orders.
 - Merge stack to `main` — PRs open on feature branches; stack must merge bottom-up.
 
 ## Testing
-`python -m pytest tests/ -q` — **473 passing**. Every new external adapter must be
+`python -m pytest tests/ -q` — **490 passing**. Every new external adapter must be
 added to `test_hardwall.py`'s allowlist and prove no FA imports.
 
 ## Git

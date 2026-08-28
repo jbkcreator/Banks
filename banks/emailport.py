@@ -1,15 +1,23 @@
 """EmailPort: parse inbound confirmation emails and match to opportunities.
 
-SPEC'D scope (MOD-01 "forwarded email confirmation listener"), intentionally
-DORMANT: the parser/Fake exist but there is no LiveEmailPort or caller yet —
-both blocked on the client mailbox/domain (CLIENT_QUERIES_V2 item 4b). Not
-speculative — pending a client input.
+MOD-01 "forwarded email confirmation listener."
+Josh forwards application confirmation emails to a dedicated Banks Gmail
+(banks-intake@gmail.com). Banks polls that inbox via IMAP every 10 minutes
+(scheduler job "email_intake_poll"), parses subjects for company names, and
+records any new opportunities it finds.
 
-Fake uses in-memory message dicts; Live would use IMAP/forwarding webhook.
-Reply-stop is manual (Slack 'got a reply' button) — no inbox monitoring at launch.
+Decisions (grilled 2026-08-28):
+- Dedicated mailbox, not Josh's personal inbox — Banks only sees what Josh
+  forwards; no OAuth to his personal Gmail needed.
+- IMAP polling (imaplib, stdlib) — no third-party dependency.
+- Poll cadence: every 10 minutes via scheduler.
+- Credentials: BANKS_INTAKE_EMAIL + BANKS_INTAKE_EMAIL_PASSWORD (app password)
+  in .env — same app-password pattern as SMTP.
 """
 from __future__ import annotations
 
+import email
+import imaplib
 import re
 from typing import Protocol
 
@@ -24,6 +32,67 @@ class FakeEmailPort:
 
     def get_confirmations(self) -> list[dict]:
         return self._messages
+
+
+class LiveImapEmailPort:
+    """Polls banks-intake@gmail.com via IMAP for forwarded confirmation emails.
+
+    Returns unread messages as dicts {subject, body, from, date} and marks
+    them read so they are not returned on the next poll.
+
+    Requires BANKS_INTAKE_EMAIL + BANKS_INTAKE_EMAIL_PASSWORD (Gmail app
+    password) in config. Gmail IMAP must be enabled on the mailbox.
+    """
+
+    IMAP_HOST = "imap.gmail.com"
+
+    def __init__(self, email_address: str, app_password: str) -> None:
+        self._email = email_address
+        self._password = app_password
+
+    def get_confirmations(self) -> list[dict]:
+        messages = []
+        try:
+            with imaplib.IMAP4_SSL(self.IMAP_HOST) as conn:
+                conn.login(self._email, self._password)
+                conn.select("INBOX")
+                _, data = conn.search(None, "UNSEEN")
+                uids = data[0].split()
+                for uid in uids:
+                    _, msg_data = conn.fetch(uid, "(RFC822)")
+                    raw = msg_data[0][1]
+                    msg = email.message_from_bytes(raw)
+                    subject = msg.get("Subject", "")
+                    from_addr = msg.get("From", "")
+                    date = msg.get("Date", "")
+                    body = _extract_body(msg)
+                    if is_confirmation_email(subject, body):
+                        messages.append({
+                            "subject": subject,
+                            "body": body,
+                            "from": from_addr,
+                            "date": date,
+                        })
+                    # Mark read regardless — non-confirmation forwards stay clean
+                    conn.store(uid, "+FLAGS", "\\Seen")
+        except (imaplib.IMAP4.error, OSError):
+            pass  # network/auth failure → return empty, scheduler retries next poll
+        return messages
+
+
+def _extract_body(msg: email.message.Message) -> str:
+    """Best-effort plain-text body extraction."""
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_type() == "text/plain":
+                payload = part.get_payload(decode=True)
+                if payload:
+                    return payload.decode("utf-8", errors="replace")
+    else:
+        payload = msg.get_payload(decode=True)
+        if payload:
+            return payload.decode("utf-8", errors="replace")
+    return ""
 
 
 _CONFIRMATION_KEYWORDS = re.compile(

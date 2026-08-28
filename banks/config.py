@@ -67,6 +67,10 @@ class BanksConfig:
     # from os.environ at the call site) so ALL creds funnel through here, which is
     # what the hard-wall test guards.
     resend_api_key: str | None = None
+    # MOD-01 forwarded email intake — dedicated banks-intake@gmail.com mailbox.
+    # IMAP polled every 10 min; Josh forwards confirmation emails here.
+    intake_email: str | None = None
+    intake_email_password: str | None = None  # Gmail app password
 
     @property
     def slack_ready(self) -> bool:
@@ -95,4 +99,6 @@ def load_config() -> BanksConfig:
         smtp_password=os.environ.get("BANKS_SMTP_PASSWORD"),
         smtp_from=os.environ.get("BANKS_SMTP_FROM"),
         resend_api_key=os.environ.get("BANKS_RESEND_API_KEY"),
+        intake_email=os.environ.get("BANKS_INTAKE_EMAIL"),
+        intake_email_password=os.environ.get("BANKS_INTAKE_EMAIL_PASSWORD"),
     )
