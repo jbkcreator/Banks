@@ -96,6 +96,7 @@ def ingest_simplify(
 
         simplify_status = map_simplify_status(parsed.get("status", ""))
 
+
         source_url = parsed["source_url"].strip() or None
         if find_duplicate(db_path, source_url, title, company) is not None:
             duplicates += 1
@@ -117,6 +118,7 @@ def ingest_simplify(
         if simplify_status == "closed":
             held += 1
             continue
+
 
         if needs_enrichment:
             held += 1
@@ -175,6 +177,56 @@ def _surface_opportunity(db_path, chat, opp_id, parsed, fit, tier, pursuit_mode)
         ),
     )
     return propose(db_path, packet, draft, chat)
+
+
+def ingest_email_confirmations(
+    db_path: str,
+    email_port,
+    chat: "ChatPort",
+) -> tuple[int, int]:
+    """MOD-01 forwarded email confirmation listener.
+
+    Polls the EmailPort (LiveImapEmailPort in prod, FakeEmailPort in tests),
+    parses each confirmation for a company name, and records it as a new
+    opportunity held for enrichment. Returns (ingested, skipped).
+
+    Decisions: dedicated banks-intake@gmail.com, polled every 10 min by
+    scheduler job 'email_intake_poll'. Josh forwards; Banks only sees what
+    he sends (no full inbox access).
+    """
+    from .emailport import extract_company_from_subject, is_confirmation_email
+
+    messages = email_port.get_confirmations()
+    ingested = skipped = 0
+
+    for msg in messages:
+        subject = msg.get("subject", "")
+        body = msg.get("body", "")
+        if not is_confirmation_email(subject, body):
+            skipped += 1
+            continue
+
+        company = extract_company_from_subject(subject) or "Unknown (forwarded email)"
+        title = "(from forwarded confirmation)"
+
+        if is_company_excluded(db_path, company):
+            skipped += 1
+            continue
+
+        if find_duplicate(db_path, None, title, company) is not None:
+            skipped += 1
+            continue
+
+        fit, tier, pursuit_mode, needs_enrichment = _score_row({}, comp_k=None, vertical=None)
+        record_opportunity(
+            db_path, title, "email_confirmation", fit,
+            tier=tier, pursuit_mode=pursuit_mode,
+            company_normalized=normalise_company(company),
+            needs_enrichment=1,  # always held — no JD details in a confirmation
+        )
+        ingested += 1
+
+    return ingested, skipped
 
 
 def export_enrichment_queue(db_path: str, out_path: str) -> int:
