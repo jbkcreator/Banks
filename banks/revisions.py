@@ -28,11 +28,6 @@ if TYPE_CHECKING:
     from .chatport import ChatPort
     from .opportunity import CareerFacts
 
-_REVISION_KEYWORDS = (
-    "shorter", "longer", "less formal", "more formal", "stronger hook",
-    "punchier", "tighten", "expand", "warmer", "more direct", "softer",
-)
-
 _REVISION_SYSTEM = (
     "You rewrite a job-search outreach draft per the user's instruction "
     "(tone / length / structure ONLY). Use ONLY the facts provided as the fact "
@@ -40,13 +35,6 @@ _REVISION_SYSTEM = (
     "not already present in the facts or the current draft. Return only the "
     "rewritten body."
 )
-
-_REVISE_ROUTER_SYSTEM = (
-    "Classify a Slack thread reply about a draft. Return JSON only: "
-    '{"intent": "revise|question|none", "instruction": "<the edit or null>"}. '
-    "revise = asks to change the draft; question = asks something; none = neither."
-)
-
 
 _REVISION_TTL_MIN = 15
 
@@ -95,46 +83,6 @@ def get_pending_revision(db_path: str, user_id: str, now: _dt.datetime | None = 
 def clear_pending_revision(db_path: str, user_id: str) -> None:
     with cursor(db_path) as cur:
         cur.execute("DELETE FROM pending_revisions WHERE user_id = ?", (user_id,))
-
-
-def is_revision_context(db_path: str, card_ts: str) -> str | None:
-    """Map a card's message ts → its draft_ref, iff still pending & active.
-
-    Slack threads one level deep, so in production a card is a thread root and
-    the reply's parent ts is the card ts. Returns None when the ts isn't a live
-    Banks card (so random thread chatter is ignored).
-    """
-    if not card_ts:
-        return None
-    with cursor(db_path) as cur:
-        row = cur.execute(
-            "SELECT qi.draft_ref FROM queue_items qi "
-            "JOIN send_intents si ON si.draft_ref = qi.draft_ref "
-            "WHERE qi.card_ts = ? AND qi.state = 'active' AND si.status = 'pending'",
-            (card_ts,),
-        ).fetchone()
-    return row["draft_ref"] if row else None
-
-
-def classify_revision(text: str, llm=None) -> tuple[str, str]:
-    """Return (intent, instruction). Keyword fast-path, LLM fallback."""
-    t = (text or "").strip()
-    low = t.lower()
-    for kw in _REVISION_KEYWORDS:
-        if kw in low:
-            return "revise", t
-    if llm is not None:
-        try:
-            data = llm.extract_json(
-                _REVISE_ROUTER_SYSTEM, t,
-                schema_hint='{"intent":"revise|question|none","instruction":"str"}',
-            )
-            intent = data.get("intent", "none")
-            if intent in ("revise", "question", "none"):
-                return intent, data.get("instruction") or t
-        except Exception:
-            pass
-    return "none", t
 
 
 def apply_revision(

@@ -21,7 +21,7 @@ from .governance import mark_lane_sent, queue_cadence, record_funnel_event
 from .packets import mark_answered, mark_completed
 from .refs import DraftRef
 from .relay import suppress_intent
-from .store import cursor
+from .store import cursor, transaction
 
 
 def _now_iso() -> str:
@@ -78,15 +78,15 @@ def mark_done(db_path: str, draft_ref: DraftRef | str) -> None:
         if lane["opportunity_id"]:
             record_funnel_event(db_path, lane["opportunity_id"], "contacted")
 
-    if si and si["to_addr"]:
-        with cursor(db_path) as cur:
+    # Atomic: touch_log + queue_items state change together — partial write would
+    # leave the card active tomorrow even though the contact was touched.
+    _ensure_row(db_path, ref)
+    with transaction(db_path) as cur:
+        if si and si["to_addr"]:
             cur.execute(
                 "INSERT INTO touch_log (address, draft_ref, touched_at) VALUES (?, ?, ?)",
                 (si["to_addr"], str(ref), now),
             )
-
-    _ensure_row(db_path, ref)
-    with cursor(db_path) as cur:
         cur.execute(
             "UPDATE queue_items SET state = 'done' WHERE draft_ref = ?", (str(ref),)
         )

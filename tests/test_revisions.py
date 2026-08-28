@@ -11,11 +11,7 @@ from banks.chatport import FakeChatPort
 from banks.config import BanksConfig
 from banks.llmport import FakeLLMPort
 from banks.opportunity import CareerFacts
-from banks.revisions import (
-    apply_revision,
-    classify_revision,
-    is_revision_context,
-)
+from banks.revisions import apply_revision
 from banks.socket_listener import classify_incoming, is_authorized
 from banks.store import cursor, init_db
 
@@ -60,36 +56,6 @@ def _pending_draft(db_path, ref="42", body="Hi, I'm interested in the role.", ca
             (ref, now, now, card_ts),
         )
     return ref
-
-
-# --- revision context gate --------------------------------------------------
-
-def test_is_revision_context_maps_card_ts(db_path):
-    ref = _pending_draft(db_path, card_ts="222.0")
-    assert is_revision_context(db_path, "222.0") == ref
-
-
-def test_is_revision_context_unknown_ts(db_path):
-    _pending_draft(db_path, card_ts="222.0")
-    assert is_revision_context(db_path, "999.9") is None
-
-
-# --- classify (keyword + none) ----------------------------------------------
-
-def test_classify_revise_keyword():
-    intent, instruction = classify_revision("make it shorter")
-    assert intent == "revise"
-
-
-def test_classify_non_revise_silent_without_llm():
-    intent, _ = classify_revision("who is this again?")
-    assert intent == "none"
-
-
-def test_classify_llm_fallback_question():
-    llm = FakeLLMPort({"who is this": '{"intent": "question", "instruction": null}'})
-    intent, _ = classify_revision("who is this again?", llm=llm)
-    assert intent == "question"
 
 
 # --- apply_revision ---------------------------------------------------------
