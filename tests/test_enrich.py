@@ -79,3 +79,46 @@ def test_enrich_pending_batch(db_path):
         '{"title":"VP of Sales","company":"AppFolio","location":"Remote","industry":"PropTech"}')})
     batch = enrich_pending(db_path, fetch, llm, FakeChatPort())
     assert batch.processed == 1 and batch.surfaced == 1
+
+
+# --- PR #7 regression: LinkedIn-only enrichment result -------------------------
+
+def test_linkedin_only_result_persisted(db_path):
+    """Result with LinkedIn URL but no email is stored with verified=0."""
+    from banks.contact_enrichment import (
+        EnrichmentResult, FakeEnrichmentPort, enqueue_company,
+        submit_pending, retrieve_and_apply,
+    )
+    enqueue_company(db_path, "linkedinco", role_hint=None, opportunity_id=None)
+    port = FakeEnrichmentPort({"linkedinco": [EnrichmentResult(
+        company="linkedinco", name="Alex Kim",
+        email="", linkedin_url="https://linkedin.com/in/alexkim",
+        title="VP Sales", verified=False,
+    )]})
+    batch_id = submit_pending(db_path, port)
+    written = retrieve_and_apply(db_path, port, batch_id)
+    assert written == 1
+    with cursor(db_path) as cur:
+        c = cur.execute("SELECT linkedin_url, verified FROM contacts WHERE company='linkedinco'").fetchone()
+        q = cur.execute("SELECT status FROM enrichment_queue WHERE batch_id=?", (batch_id,)).fetchone()
+    assert c["linkedin_url"] == "https://linkedin.com/in/alexkim"
+    assert c["verified"] == 0
+    assert q["status"] == "done"
+
+
+def test_no_usable_result_marks_failed(db_path):
+    """No email and no LinkedIn URL marks queue row failed, not done."""
+    from banks.contact_enrichment import (
+        EnrichmentResult, FakeEnrichmentPort, enqueue_company,
+        submit_pending, retrieve_and_apply,
+    )
+    enqueue_company(db_path, "ghostco", role_hint=None, opportunity_id=None)
+    port = FakeEnrichmentPort({"ghostco": [EnrichmentResult(
+        company="ghostco", name="", email="", linkedin_url="", title="", verified=False,
+    )]})
+    batch_id = submit_pending(db_path, port)
+    written = retrieve_and_apply(db_path, port, batch_id)
+    assert written == 0
+    with cursor(db_path) as cur:
+        q = cur.execute("SELECT status FROM enrichment_queue WHERE batch_id=?", (batch_id,)).fetchone()
+    assert q["status"] == "failed"

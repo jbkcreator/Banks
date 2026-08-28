@@ -229,6 +229,8 @@ def retrieve_and_apply(db_path: str, port: EnrichmentPort, batch_id: str) -> int
     for q in queued:
         res = by_company.get(q["company_normalized"])
         with cursor(db_path) as cur:
+            # Persist if we have a name + either email or LinkedIn URL.
+            # verified=0 when no email — downstream routing will choose LinkedIn DM.
             if res and (res.email or res.linkedin_url):
                 cur.execute(
                     "INSERT INTO contacts (name, company, email, linkedin_url, degree, "
@@ -244,6 +246,7 @@ def retrieve_and_apply(db_path: str, port: EnrichmentPort, batch_id: str) -> int
                 cur.execute("UPDATE enrichment_queue SET status='done', resolved_at=? WHERE id=?",
                             (_now(), q["id"]))
             else:
+                # No usable result — mark failed so it can be retried or flagged.
                 cur.execute("UPDATE enrichment_queue SET status='failed', resolved_at=? WHERE id=?",
                             (_now(), q["id"]))
     return written
