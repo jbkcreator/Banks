@@ -35,6 +35,27 @@ def _require_facts(facts: CareerFacts) -> None:
         )
 
 
+def _linkedin_action_line(contact: dict) -> str:
+    """Human-Safe LinkedIn Handoff (MOD-03): DM compose deep-link or a flag if missing.
+
+    Opens LinkedIn's compose window pre-addressed to the contact's profile.
+    Josh clicks, pastes the draft above, hits Send — zero browser automation.
+    Falls back to a plain profile URL if no messaging deep-link can be built.
+    """
+    url = (contact.get("linkedin_url") or "").strip()
+    if not url:
+        return "⚠️ No LinkedIn URL on file — find manually and paste draft above."
+    # Extract profile slug from any linkedin.com/in/<slug>[/...] URL
+    import re
+    m = re.search(r"linkedin\.com/in/([^/?#]+)", url)
+    if m:
+        slug = m.group(1).rstrip("/")
+        dm_link = f"https://www.linkedin.com/messaging/thread/new/?recipient={slug}"
+        return f"👉 Open LinkedIn DM: {dm_link}\n   (Paste draft above, then click 'Mark done')"
+    # URL present but non-standard — link the profile directly
+    return f"👉 LinkedIn profile: {url}\n   (Open, send DM manually, then click 'Mark done')"
+
+
 def draft_hiring_manager_lane(
     title: str,
     company: str,
@@ -100,12 +121,14 @@ def draft_employee_lane(
 ) -> Draft:
     _require_facts(facts)
     name = contact.get("name") or "there"
+    has_email = bool(contact.get("verified") and contact.get("email"))
+    action_line = "" if has_email else f"\n{_linkedin_action_line(contact)}"
     body = (
         f"Hi {name},\n\n"
         f"I noticed you're at {company} — I'm exploring the {title} opportunity there and "
         f"would love to hear about your experience at the company if you have a few minutes.\n\n"
         f"No pressure — happy to keep it brief.\n\n"
-        f"[Draft from career-facts only — review before sending.]"
+        f"[Draft from career-facts only — review before sending.]{action_line}"
     )
     to = contact.get("email") or contact.get("name") or "contact"
     return Draft(
@@ -142,18 +165,17 @@ def draft_warm_intro_ask(
 def draft_linkedin_lane(
     title: str, company: str, contact: dict, facts: CareerFacts
 ) -> Draft:
-    """LinkedIn connection note — copy-ready; Josh sends manually via 'Mark sent'."""
+    """LinkedIn connection note — copy-ready; Josh sends manually via 'Mark done'."""
     _require_facts(facts)
     name = contact.get("name") or "there"
-    linkedin_url = contact.get("linkedin_url") or "(find on LinkedIn)"
     seeking = facts.seeking or "I am actively exploring senior GTM opportunities."
+    action_line = _linkedin_action_line(contact)
     body = (
-        f"LinkedIn DM draft for {name} ({linkedin_url}):\n\n"
         f"Hi {name}, I came across the {title} role at {company} and wanted to connect. "
         f"{seeking} "
         f"Would love to connect if you're open to it.\n\n"
-        f"[Copy-paste into LinkedIn — Banks cannot send LinkedIn messages directly. "
-        f"Click 'Mark sent' once you've sent it.]"
+        f"[Draft from career-facts only — review before sending.]\n\n"
+        f"{action_line}"
     )
     return Draft(
         kind="linkedin_outreach",
