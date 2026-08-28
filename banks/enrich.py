@@ -14,7 +14,10 @@ Fetching is behind a Port so tests never hit the network.
 """
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
+import urllib.parse
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -52,16 +55,40 @@ class FakeFetchPort:
         return self._pages.get(url)
 
 
+def _is_safe_url(url: str) -> bool:
+    """SSRF guard: https-only, no private/loopback/reserved IPs."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        return False
+    host = parsed.hostname or ""
+    try:
+        infos = socket.getaddrinfo(host, None)
+        for info in infos:
+            ip = ipaddress.ip_address(info[4][0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                return False
+    except Exception:
+        return False
+    return True
+
+
 class LiveFetchPort:
-    """Real HTTP GET + HTML-to-text. Returns None on any failure (never raises)."""
+    """Real HTTP GET + HTML-to-text. SSRF-safe: https-only, no private IPs, max 3 redirects."""
     def fetch(self, url: str) -> str | None:
         try:
-            r = httpx.get(url, timeout=15, follow_redirects=True,
-                          headers={"User-Agent": _UA})
-            r.raise_for_status()
-            return html_to_text(r.text)[:8000]
+            for _ in range(3):
+                if not _is_safe_url(url):
+                    return None
+                r = httpx.get(url, timeout=15, follow_redirects=False,
+                              headers={"User-Agent": _UA})
+                if r.status_code in (301, 302, 303, 307, 308):
+                    url = r.headers.get("location", "")
+                    continue
+                r.raise_for_status()
+                return html_to_text(r.text)[:8000]
         except Exception:
             return None
+        return None
 
 
 @dataclass(frozen=True)

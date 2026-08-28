@@ -86,6 +86,10 @@ def generate_surround_pack(
     # Only lanes that have a real target are included.
     lane_specs: list[tuple[str, int | None, object, object]] = []
 
+    # Tier C: no outreach pack — only Tier A/B warrant surround.
+    if tier not in ("A", "B"):
+        return SurroundPack(opportunity_id=opportunity_id, lanes=[])
+
     # Tier B: recruiter lane only
     if tier != "A":
         draft = draft_recruiter_lane(title, company, career_facts)
