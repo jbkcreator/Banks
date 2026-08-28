@@ -229,18 +229,24 @@ def retrieve_and_apply(db_path: str, port: EnrichmentPort, batch_id: str) -> int
     for q in queued:
         res = by_company.get(q["company_normalized"])
         with cursor(db_path) as cur:
-            if res and res.email:
+            # Persist if we have a name + either email or LinkedIn URL.
+            # verified=0 when no email — downstream routing will choose LinkedIn DM.
+            if res and (res.email or res.linkedin_url):
                 cur.execute(
                     "INSERT INTO contacts (name, company, email, linkedin_url, degree, "
                     "source, title, verified, enriched_at, added_at) "
                     "VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)",
-                    (res.name, q["company_normalized"], res.email, res.linkedin_url,
+                    (res.name, q["company_normalized"], res.email or "", res.linkedin_url,
                      _CLAY_SOURCE, res.title, 1 if res.verified else 0, _now(), _now()))
                 contact_id = cur.lastrowid
                 written += 1
                 if q["opportunity_id"]:
                     cur.execute("UPDATE opportunities SET contact_id=? WHERE id=?",
                                 (contact_id, q["opportunity_id"]))
-            cur.execute("UPDATE enrichment_queue SET status='done', resolved_at=? WHERE id=?",
-                        (_now(), q["id"]))
+                cur.execute("UPDATE enrichment_queue SET status='done', resolved_at=? WHERE id=?",
+                            (_now(), q["id"]))
+            else:
+                # No usable result — mark failed so it can be retried or flagged.
+                cur.execute("UPDATE enrichment_queue SET status='failed', resolved_at=? WHERE id=?",
+                            (_now(), q["id"]))
     return written
