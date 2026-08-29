@@ -241,6 +241,16 @@ CREATE TABLE IF NOT EXISTS company_exclusions (
     added_at TEXT NOT NULL
 );
 
+-- MOD-01 target watchlist (item 6). Josh's priority companies; a posted role at
+-- a listed company gets a graded fit-score bump (targets.TARGET_BONUS). Passive
+-- boost only — never proactive surfacing. priority 1 = strongest fit.
+CREATE TABLE IF NOT EXISTS target_companies (
+    company_normalized TEXT PRIMARY KEY,
+    priority INTEGER NOT NULL DEFAULT 2,   -- 1 strong / 2 moderate / 3 breadth
+    label TEXT,                            -- original name/category, for the brief
+    added_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS touch_log (
     id INTEGER PRIMARY KEY,
     address TEXT NOT NULL,

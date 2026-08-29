@@ -63,6 +63,10 @@ class BanksConfig:
     # MOD-06 exclusion seed file — source of truth for who Banks must never
     # contact. Loaded at startup; a Slack `exclude` command writes back here.
     exclusions_file: str = "exclusions.txt"
+    # MOD-01 target watchlist (item 6): Josh's priority companies. A posted role
+    # at a listed company gets a graded fit-score bump (targets.py). Loaded at
+    # startup like exclusions; a passive score boost, never proactive surfacing.
+    targets_file: str = "targets.txt"
     # Outbound SMTP (Relay's mailer). Banks' OWN separate mailbox — never FA's.
     # STARTTLS on 587. from_addr is Josh's sending identity for outreach.
     smtp_host: str | None = None
@@ -108,6 +112,7 @@ def load_config() -> BanksConfig:
         db_path=os.environ.get("BANKS_DB_PATH", "banks.db"),
         outbox_dir=os.environ.get("BANKS_OUTBOX_DIR", "outbox"),
         exclusions_file=os.environ.get("BANKS_EXCLUSIONS_FILE", "exclusions.txt"),
+        targets_file=os.environ.get("BANKS_TARGETS_FILE", "targets.txt"),
         smtp_host=os.environ.get("BANKS_SMTP_HOST"),
         smtp_port=int(os.environ.get("BANKS_SMTP_PORT", "587")),
         smtp_user=os.environ.get("BANKS_SMTP_USER"),

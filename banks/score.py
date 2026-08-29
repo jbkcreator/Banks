@@ -108,14 +108,24 @@ def compute_fit_score(
     return round(raw)
 
 
+# Target-watchlist bump by priority (item 6). Kept here so the boost is part of
+# the single fit→tier decision; the caller supplies the priority (the db lookup
+# lives in targets.py, keeping score.py pure). See banks/targets.py.
+TARGET_BONUS: dict[int, int] = {1: 12, 2: 8, 3: 4}
+
+
 def score_role(comp_k, industry, location, pursuit_mode,
-               cfg: ScoringConfig = DEFAULT_SCORING):
+               cfg: ScoringConfig = DEFAULT_SCORING,
+               target_priority: int | None = None):
     """Score one role end to end. The single home for the fit→tier→hold decision
     (was copy-pasted across intake/manual_intake/enrich).
 
     Returns (fit 0–100, tier A/B/C, needs_enrichment). needs_enrichment gates on
     INDUSTRY — postings rarely publish salary, so requiring comp would hold every
     row forever; comp stays neutral (0.5) when unknown.
+
+    target_priority (1/2/3) adds a graded watchlist bump to the fit, capped at
+    100, so a posting at one of Josh's target companies floats up. None = no bump.
     """
     fit = compute_fit_score(
         score_comp(comp_k, cfg),
@@ -124,5 +134,7 @@ def score_role(comp_k, industry, location, pursuit_mode,
         score_pursuit_mode(pursuit_mode, cfg),
         cfg,
     )
+    if target_priority is not None:
+        fit = min(100, fit + TARGET_BONUS.get(target_priority, 0))
     needs_enrichment = not (industry and str(industry).strip())
     return fit, assign_tier(fit, cfg), needs_enrichment

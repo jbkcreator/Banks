@@ -53,14 +53,20 @@ class IntakeResult:
     proposals: list[Proposed]
 
 
-def _score_row(parsed: dict, comp_k: float | None, vertical: str | None) -> tuple[int, str, str, bool]:
-    """Return (fit_score, tier, pursuit_mode, needs_enrichment) — via score.score_role."""
+def _score_row(parsed: dict, comp_k: float | None, vertical: str | None,
+               target_priority: int | None = None) -> tuple[int, str, str, bool]:
+    """Return (fit_score, tier, pursuit_mode, needs_enrichment) — via score.score_role.
+
+    target_priority (from the watchlist, item 6) applies a graded fit bump so a
+    posting at one of Josh's target companies floats up.
+    """
     pursuit_mode = classify_pursuit_mode(
         f"{parsed.get('title', '')} {parsed.get('job_type', '')}"
     )
     fit, tier, needs_enrichment = _score.score_role(
         comp_k=comp_k, industry=vertical,
-        location=parsed.get("location", ""), pursuit_mode=pursuit_mode)
+        location=parsed.get("location", ""), pursuit_mode=pursuit_mode,
+        target_priority=target_priority)
     return fit, tier, pursuit_mode, needs_enrichment
 
 
@@ -102,7 +108,10 @@ def ingest_simplify(
             continue
 
         # Simplify carries neither salary nor industry.
-        fit, tier, pursuit_mode, needs_enrichment = _score_row(parsed, comp_k=None, vertical=None)
+        from .targets import target_priority
+        fit, tier, pursuit_mode, needs_enrichment = _score_row(
+            parsed, comp_k=None, vertical=None,
+            target_priority=target_priority(db_path, company))
 
         opp_id = record_opportunity(
             db_path, title, parsed["source"], fit,
@@ -221,7 +230,10 @@ def ingest_email_confirmations(
             skipped += 1
             continue
 
-        fit, tier, pursuit_mode, needs_enrichment = _score_row({}, comp_k=None, vertical=None)
+        from .targets import target_priority
+        fit, tier, pursuit_mode, needs_enrichment = _score_row(
+            {}, comp_k=None, vertical=None,
+            target_priority=target_priority(db_path, company))
         record_opportunity(
             db_path, title, "email_confirmation", fit,
             tier=tier, pursuit_mode=pursuit_mode,

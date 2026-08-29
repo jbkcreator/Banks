@@ -1,0 +1,79 @@
+# Banks target watchlist (item 6) — Josh's priority companies.
+# Loaded at startup (banks.targets.load_targets_from_file). Idempotent.
+#
+# A posted role at a listed company gets a graded fit-score bump so it floats up
+# the queue. Passive boost only — Banks never proactively pitches these; it still
+# acts only on real postings. Matched on the normalised company slug.
+#
+# Format (one per line; `#` starts a comment):
+#   priority 1: <name>   -> strongest fit  (+12)
+#   priority 2: <name>   -> moderate       (+8)
+#   priority 3: <name>   -> breadth        (+4)
+# A bare name with no prefix defaults to priority 2.
+#
+# Source: Josh's researched list, 2026-08-29. Excluded/avoid companies are NOT
+# here — they live in exclusions.txt (EDGE, Rent Solutions, Azibo, Zego/PayLease,
+# Buildium, Mynd, Poplar Homes).
+
+# --- Tier 1: PropTech / vertical SaaS + proptech-fintech (best fit) ---
+priority 1: EliseAI
+priority 1: DoorLoop
+priority 1: ResMan
+priority 1: TheGuarantors
+priority 1: Obie
+priority 1: Flex
+priority 1: Baselane
+priority 1: Latchel
+priority 1: RentVine
+priority 1: LeadSimple
+priority 1: Zuma
+priority 1: Rentana
+priority 1: Funnel Leasing
+priority 1: Knock CRM
+priority 1: HappyCo
+priority 1: Second Nature
+priority 1: ButterflyMX
+
+# --- Tier 2: real estate lending (Lima One competitors) ---
+priority 2: Kiavi
+priority 2: Roc360
+priority 2: Roc Capital
+priority 2: CoreVest
+priority 2: Anchor Loans
+priority 2: RCN Capital
+priority 2: Visio Lending
+priority 2: LendingOne
+priority 2: Easy Street Capital
+priority 2: Velocity Mortgage Capital
+priority 2: Constructive Capital
+
+# --- NARPM 2026 sponsor/business-partner roster (active in the PM channel) ---
+priority 2: PetScreening
+priority 2: National Tenant Network
+priority 2: Property Meld
+priority 2: Vendoroo
+priority 2: Lula
+priority 2: Anequim
+priority 2: BetterWho
+priority 2: Pest Share
+priority 2: Column
+priority 2: Boom
+priority 2: Enterprise Bank & Trust
+priority 2: Tenant Turner
+priority 2: ShowMojo
+priority 2: Rently
+priority 2: PMW
+priority 2: PlanOmatic
+priority 2: zInspector
+priority 2: Utility Profit
+priority 2: Utility Valet
+priority 2: Yardi Breeze
+priority 2: Rent Manager
+priority 2: Apartments.com
+
+# --- Lower priority / lower confidence (category breadth only) ---
+priority 3: RentScale
+priority 3: Inspection Express
+priority 3: Nutiliti
+priority 3: ClickPay
+priority 3: PayNearMe

@@ -142,8 +142,10 @@ def ingest_manual(
         return ManualIntakeResult(dup, "-", 0, False, False, None, skipped="duplicate")
 
     pursuit_mode = classify_pursuit_mode(f"{title} {jd_text or ''}")
+    from .targets import target_priority
     fit, tier, needs_enrichment = _score.score_role(
-        comp_k=comp_k, industry=industry, location=location, pursuit_mode=pursuit_mode)
+        comp_k=comp_k, industry=industry, location=location, pursuit_mode=pursuit_mode,
+        target_priority=target_priority(db_path, company))
 
     opp_id = record_opportunity(
         db_path, title, "manual", fit,
