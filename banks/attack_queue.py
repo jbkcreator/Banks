@@ -302,6 +302,13 @@ def _no_open_role_cards(
     if career_facts is None or career_facts.is_empty() or chat is None:
         return []
 
+    # Client policy (2026-08-29): no proactive consulting pitches to companies
+    # that haven't posted a role. Off by default; flip BANKS_PROACTIVE_CONSULTING
+    # to re-enable without a rebuild.
+    from .config import load_config
+    if not load_config().proactive_consulting_enabled:
+        return []
+
     from .enforcement import Draft as _Draft
     from .exclusion import DraftExcluded
     from .flow import propose

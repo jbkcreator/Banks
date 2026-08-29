@@ -146,3 +146,34 @@ class TestNoOpenRoleLite:
         eveco = next((c for c in candidates if c["company"] == "eveco"), None)
         assert eveco is not None
         assert eveco["contact"]["name"] == "Eve"
+
+
+# ---------------------------------------------------------------------------
+# Client policy: no proactive consulting unless flag enabled
+# ---------------------------------------------------------------------------
+
+class TestProactiveConsultingGate:
+    def _facts(self):
+        from banks.opportunity import CareerFacts
+        return CareerFacts(identity="GTM leader", experience=("VP Sales",),
+                           skills=("enterprise sales",), seeking="VP Sales / CRO")
+
+    def test_cards_suppressed_when_flag_off(self, db_path, monkeypatch):
+        from banks.attack_queue import _no_open_role_cards
+        from banks.chatport import FakeChatPort
+        from banks.config import BanksConfig
+        _contact(db_path, "Alice", "pitchme_corp", degree=1, email="a@x.com")
+        monkeypatch.setattr("banks.config.load_config",
+                            lambda: BanksConfig(None, None, proactive_consulting_enabled=False))
+        cards = _no_open_role_cards(db_path, "2026-08-28", self._facts(), FakeChatPort())
+        assert cards == []
+
+    def test_cards_surface_when_flag_on(self, db_path, monkeypatch):
+        from banks.attack_queue import _no_open_role_cards
+        from banks.chatport import FakeChatPort
+        from banks.config import BanksConfig
+        _contact(db_path, "Alice", "pitchme_corp", degree=1, email="a@x.com")
+        monkeypatch.setattr("banks.config.load_config",
+                            lambda: BanksConfig(None, None, proactive_consulting_enabled=True))
+        cards = _no_open_role_cards(db_path, "2026-08-28", self._facts(), FakeChatPort())
+        assert any(c.kind == "no_open_role" for c in cards)

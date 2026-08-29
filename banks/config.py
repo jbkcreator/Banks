@@ -78,6 +78,11 @@ class BanksConfig:
     # IMAP polled every 10 min; Josh forwards confirmation emails here.
     intake_email: str | None = None
     intake_email_password: str | None = None  # Gmail app password
+    # No-Open-Role Lite (MOD-05): proactively pitch consulting to warm-contact
+    # companies that have NOT posted a role. Client policy (2026-08-29): off —
+    # consulting only when a real role/conversation points that way. Flag kept so
+    # it's a one-line flip if Josh later wants warm-company pitches, not a rebuild.
+    proactive_consulting_enabled: bool = False
 
     @property
     def slack_ready(self) -> bool:
@@ -111,4 +116,6 @@ def load_config() -> BanksConfig:
         resend_api_key=os.environ.get("BANKS_RESEND_API_KEY"),
         intake_email=os.environ.get("BANKS_INTAKE_EMAIL"),
         intake_email_password=os.environ.get("BANKS_INTAKE_EMAIL_PASSWORD"),
+        proactive_consulting_enabled=os.environ.get(
+            "BANKS_PROACTIVE_CONSULTING", "").strip().lower() in ("1", "true", "yes"),
     )
