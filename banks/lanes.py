@@ -14,8 +14,20 @@ from .opportunity import CareerFacts
 if TYPE_CHECKING:
     from .llmport import LLMPort
 
+# Josh's confirmed outreach voice (client 2026-08-29): direct, specific,
+# credential-led, casual opener, and an explicit "no ask" when there isn't one.
+# Applied to outreach prompts only — not the internal POV brief.
+_TONE = (
+    "Voice: write as Josh himself — direct and specific, not formal or salesy. "
+    "Open casually (no 'Dear Hiring Manager'). Lead with one concrete, relevant "
+    "credential from the facts. State compensation as open/negotiable if it comes "
+    "up — never a number. When there is no ask, say so plainly rather than angling "
+    "for one. "
+)
+
 _HIRING_MANAGER_SYSTEM = (
-    "You are drafting a professional outreach email from a job applicant. "
+    "You are drafting an outreach email from a job applicant. "
+    + _TONE +
     "Use ONLY the facts provided. Do not invent experience, titles, or numbers. "
     "Be concise (3-4 sentences). Return only the email body, no subject line."
 )
