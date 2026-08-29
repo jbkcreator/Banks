@@ -127,26 +127,83 @@ class ManualCSVEnrichmentPort:
 
 
 class LiveClayEnrichmentPort:
-    """Paid Clay path: push a batch into a Clay table, poll for enriched rows.
+    """Paid Clay path, push-in / Sheet-pull (grilled 2026-08-29).
 
-    Inert until the account is on a paid plan with a configured table + webhook
-    (CLIENT_QUERIES_V2 item 5). Requires clay_api_key + a table webhook URL.
+    Clay's paid API is push-oriented and async: there is no synchronous "enrich
+    and poll" endpoint. So the two halves talk to different endpoints but form
+    one logical port:
+
+      submit()   — POSTs each queued company into a Clay table via its inbound
+                   webhook (`clay_webhook_url`), tagging every row with a
+                   generated batch_id so results can be correlated later.
+      retrieve() — reads the enriched rows Clay writes to a Google Sheet buffer
+                   (`enrichment_sheet_id`) with a READ-ONLY service account, and
+                   returns the rows whose batch_id matches. None while the Sheet
+                   has no rows for the batch yet (still pending).
+
+    The Sheet is the async buffer that decouples Clay's push from Banks' pull —
+    and it means Banks needs no inbound network surface, so the hard wall stays
+    physical (outbound POST + outbound read only). Reuses the same service-account
+    pattern as GoogleCalendarPort.
+
+    Inert until BOTH `clay_webhook_url` and `enrichment_sheet_id` are set; until
+    then submit() raises clearly rather than pretending to have enriched.
+
+    `sheet_reader` is an injection seam: a zero-arg callable returning the Sheet's
+    rows as list[dict] (header-keyed). Defaults to a live read-only Sheets read;
+    tests pass a fake so retrieve() parsing is exercised with no network.
     """
-    _BASE = "https://api.clay.com/v3"
+    _BATCH_COL = "batch_id"
+
+    def __init__(self, cfg=None, sheet_reader=None) -> None:
+        self._cfg = cfg or load_config()
+        self._sheet_reader = sheet_reader
 
     def submit(self, requests: list[EnrichmentRequest]) -> str:
-        cfg = load_config()
-        if not cfg.clay_api_key:
+        if not self._cfg.clay_webhook_url:
             raise RuntimeError(
-                "LiveClayEnrichmentPort needs a PAID Clay plan + table webhook. "
-                "Free tier blocks the API — use ManualCSVEnrichmentPort until upgraded "
-                "(see CLIENT_QUERIES_V2 item 5).")
-        # Real impl: POST each request into the Clay table webhook. Left guarded
-        # until a paid table URL exists so we never pretend to have enriched.
-        raise NotImplementedError("Clay paid table webhook not provisioned yet.")
+                "LiveClayEnrichmentPort needs BANKS_CLAY_WEBHOOK_URL (a Clay table "
+                "inbound webhook) + BANKS_ENRICHMENT_SHEET_ID. Until both are set, "
+                "use ManualCSVEnrichmentPort — never pretend to have enriched.")
+        batch_id = f"clay-{uuid.uuid4().hex[:8]}"
+        for r in requests:
+            payload = {
+                self._BATCH_COL: batch_id,
+                "company": r.company,
+                "role_hint": r.role_hint or "",
+                "name": r.name or "",
+            }
+            httpx.post(self._cfg.clay_webhook_url, json=payload, timeout=30).raise_for_status()
+        return batch_id
+
+    def _read_sheet(self) -> list[dict]:
+        """Read the enrichment Sheet as header-keyed rows via a read-only SA."""
+        if self._sheet_reader is not None:
+            return self._sheet_reader()
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        creds = service_account.Credentials.from_service_account_file(
+            self._cfg.gcp_sa_key,
+            scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"])
+        svc = build("sheets", "v4", credentials=creds)
+        resp = svc.spreadsheets().values().get(
+            spreadsheetId=self._cfg.enrichment_sheet_id,
+            range=self._cfg.enrichment_sheet_range).execute()
+        values = resp.get("values", [])
+        if not values:
+            return []
+        header, *rows = values
+        return [dict(zip(header, r + [""] * (len(header) - len(r)))) for r in rows]
 
     def retrieve(self, batch_id: str) -> list[EnrichmentResult] | None:
-        raise NotImplementedError("Clay paid table poll not provisioned yet.")
+        rows = [r for r in self._read_sheet() if r.get(self._BATCH_COL) == batch_id]
+        if not rows:
+            return None  # Clay hasn't written this batch back to the Sheet yet
+        return [EnrichmentResult(
+            company=r.get("company", ""), name=r.get("name", ""),
+            email=r.get("email", ""),
+            verified=str(r.get("verified", "")).strip().lower() in ("1", "true", "yes", "verified"),
+            title=r.get("title") or None, linkedin_url=r.get("linkedin_url", "")) for r in rows]
 
 
 # --- queue -----------------------------------------------------------------
@@ -250,3 +307,29 @@ def retrieve_and_apply(db_path: str, port: EnrichmentPort, batch_id: str) -> int
                 cur.execute("UPDATE enrichment_queue SET status='failed', resolved_at=? WHERE id=?",
                             (_now(), q["id"]))
     return written
+
+
+def drain_submitted(db_path: str, port: EnrichmentPort) -> int:
+    """Retrieve every outstanding submitted batch. Returns total contacts written.
+
+    The scheduled retrieve job: finds each distinct batch still 'submitted' and
+    runs retrieve_and_apply. Batches Clay hasn't written back yet are no-ops
+    (retrieve returns None), so this is safe to fire on a short interval.
+    """
+    with cursor(db_path) as cur:
+        batch_ids = [r["batch_id"] for r in cur.execute(
+            "SELECT DISTINCT batch_id FROM enrichment_queue "
+            "WHERE status = 'submitted' AND batch_id IS NOT NULL").fetchall()]
+    return sum(retrieve_and_apply(db_path, port, bid) for bid in batch_ids)
+
+
+def select_enrichment_port(cfg) -> EnrichmentPort | None:
+    """Choose the live enrichment port from config, or None if unprovisioned.
+
+    Live Clay (webhook push + Sheet pull) once both creds are set; otherwise
+    None — the scheduled jobs then no-op rather than fall back to a path that
+    can't actually enrich. The manual-CSV path stays available for hand runs.
+    """
+    if cfg.clay_webhook_url and cfg.enrichment_sheet_id:
+        return LiveClayEnrichmentPort(cfg)
+    return None

@@ -46,6 +46,13 @@ class BanksConfig:
     gcp_sa_key: str | None = None
     calendar_id: str | None = None
     clay_api_key: str | None = None
+    # Clay paid integration (MOD-02). submit() POSTs queued companies into a Clay
+    # table via its inbound webhook; Clay enriches async and writes rows to a
+    # Google Sheet buffer, which retrieve() polls read-only (no inbound surface —
+    # keeps the wall physical). Both blank → LiveClay stays inert (manual CSV path).
+    clay_webhook_url: str | None = None
+    enrichment_sheet_id: str | None = None
+    enrichment_sheet_range: str = "Sheet1"
     # LLM key. Banks-namespaced ONLY — never the generic ANTHROPIC_API_KEY, so a
     # shared environment can't leak Forced Action's key into Banks (wall + billing).
     anthropic_api_key: str | None = None
@@ -89,6 +96,9 @@ def load_config() -> BanksConfig:
         calendar_id=os.environ.get("BANKS_CALENDAR_ID"),
         timezone=os.environ.get("BANKS_TIMEZONE", "America/New_York"),
         clay_api_key=os.environ.get("BANKS_CLAY_API_KEY"),
+        clay_webhook_url=os.environ.get("BANKS_CLAY_WEBHOOK_URL"),
+        enrichment_sheet_id=os.environ.get("BANKS_ENRICHMENT_SHEET_ID"),
+        enrichment_sheet_range=os.environ.get("BANKS_ENRICHMENT_SHEET_RANGE", "Sheet1"),
         anthropic_api_key=os.environ.get("BANKS_ANTHROPIC_API_KEY"),
         db_path=os.environ.get("BANKS_DB_PATH", "banks.db"),
         outbox_dir=os.environ.get("BANKS_OUTBOX_DIR", "outbox"),

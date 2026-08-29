@@ -78,6 +78,24 @@ def run_job(name: str, db_path: str, chat: ChatPort) -> dict | None:
                       "sent": len(result.sent)}, minutes_saved=0)
         return {"sent": result.sent, "skipped": result.skipped,
                 "failed": result.failed, "blocked": result.blocked}
+    if name in ("enrichment_submit", "enrichment_retrieve"):
+        # MOD-02: Clay enrichment (webhook push + Sheet pull). Both no-op unless
+        # the paid creds (webhook URL + Sheet ID) are set, so an unprovisioned
+        # Banks just skips rather than erroring on every tick.
+        from .config import load_config
+        from .contact_enrichment import (drain_submitted, select_enrichment_port,
+                                          submit_pending)
+        port = select_enrichment_port(load_config())
+        if port is None:
+            return None
+        if name == "enrichment_submit":
+            batch_id = submit_pending(db_path, port)
+            return {"submitted_batch": batch_id} if batch_id else None
+        written = drain_submitted(db_path, port)
+        if written:
+            log_event(db_path, "draft_created", meta={"job": "enrichment_retrieve",
+                      "contacts": written}, minutes_saved=0)
+        return {"enriched_contacts": written} if written else None
     return None
 
 

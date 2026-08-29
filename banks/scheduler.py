@@ -36,6 +36,11 @@ STANDING_JOBS = [
     # 'approved' — something has to actually call relay_run(). Short interval
     # so an approved draft doesn't sit for hours before it's sent.
     StandingJob("relay_dispatch", "interval", interval_minutes=5),
+    # MOD-02 contact enrichment (Clay paid, webhook push + Sheet pull). Submit
+    # drains the pending queue into Clay hourly; retrieve polls the Sheet buffer
+    # every 15 min for rows Clay has written back. Both no-op without creds.
+    StandingJob("enrichment_submit", "interval", interval_minutes=60),
+    StandingJob("enrichment_retrieve", "interval", interval_minutes=15),
 ]
 
 
