@@ -46,6 +46,13 @@ class BanksConfig:
     gcp_sa_key: str | None = None
     calendar_id: str | None = None
     clay_api_key: str | None = None
+    # Clay paid integration (MOD-02). submit() POSTs queued companies into a Clay
+    # table via its inbound webhook; Clay enriches async and writes rows to a
+    # Google Sheet buffer, which retrieve() polls read-only (no inbound surface —
+    # keeps the wall physical). Both blank → LiveClay stays inert (manual CSV path).
+    clay_webhook_url: str | None = None
+    enrichment_sheet_id: str | None = None
+    enrichment_sheet_range: str = "Sheet1"
     # LLM key. Banks-namespaced ONLY — never the generic ANTHROPIC_API_KEY, so a
     # shared environment can't leak Forced Action's key into Banks (wall + billing).
     anthropic_api_key: str | None = None
@@ -56,6 +63,10 @@ class BanksConfig:
     # MOD-06 exclusion seed file — source of truth for who Banks must never
     # contact. Loaded at startup; a Slack `exclude` command writes back here.
     exclusions_file: str = "exclusions.txt"
+    # MOD-01 target watchlist (item 6): Josh's priority companies. A posted role
+    # at a listed company gets a graded fit-score bump (targets.py). Loaded at
+    # startup like exclusions; a passive score boost, never proactive surfacing.
+    targets_file: str = "targets.txt"
     # Outbound SMTP (Relay's mailer). Banks' OWN separate mailbox — never FA's.
     # STARTTLS on 587. from_addr is Josh's sending identity for outreach.
     smtp_host: str | None = None
@@ -71,6 +82,11 @@ class BanksConfig:
     # IMAP polled every 10 min; Josh forwards confirmation emails here.
     intake_email: str | None = None
     intake_email_password: str | None = None  # Gmail app password
+    # No-Open-Role Lite (MOD-05): proactively pitch consulting to warm-contact
+    # companies that have NOT posted a role. Client policy (2026-08-29): off —
+    # consulting only when a real role/conversation points that way. Flag kept so
+    # it's a one-line flip if Josh later wants warm-company pitches, not a rebuild.
+    proactive_consulting_enabled: bool = False
 
     @property
     def slack_ready(self) -> bool:
@@ -89,10 +105,14 @@ def load_config() -> BanksConfig:
         calendar_id=os.environ.get("BANKS_CALENDAR_ID"),
         timezone=os.environ.get("BANKS_TIMEZONE", "America/New_York"),
         clay_api_key=os.environ.get("BANKS_CLAY_API_KEY"),
+        clay_webhook_url=os.environ.get("BANKS_CLAY_WEBHOOK_URL"),
+        enrichment_sheet_id=os.environ.get("BANKS_ENRICHMENT_SHEET_ID"),
+        enrichment_sheet_range=os.environ.get("BANKS_ENRICHMENT_SHEET_RANGE", "Sheet1"),
         anthropic_api_key=os.environ.get("BANKS_ANTHROPIC_API_KEY"),
         db_path=os.environ.get("BANKS_DB_PATH", "banks.db"),
         outbox_dir=os.environ.get("BANKS_OUTBOX_DIR", "outbox"),
         exclusions_file=os.environ.get("BANKS_EXCLUSIONS_FILE", "exclusions.txt"),
+        targets_file=os.environ.get("BANKS_TARGETS_FILE", "targets.txt"),
         smtp_host=os.environ.get("BANKS_SMTP_HOST"),
         smtp_port=int(os.environ.get("BANKS_SMTP_PORT", "587")),
         smtp_user=os.environ.get("BANKS_SMTP_USER"),
@@ -101,4 +121,6 @@ def load_config() -> BanksConfig:
         resend_api_key=os.environ.get("BANKS_RESEND_API_KEY"),
         intake_email=os.environ.get("BANKS_INTAKE_EMAIL"),
         intake_email_password=os.environ.get("BANKS_INTAKE_EMAIL_PASSWORD"),
+        proactive_consulting_enabled=os.environ.get(
+            "BANKS_PROACTIVE_CONSULTING", "").strip().lower() in ("1", "true", "yes"),
     )

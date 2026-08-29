@@ -67,6 +67,12 @@ class Container:
             from .exclusion import load_exclusions_from_file
             load_exclusions_from_file(resolved_db, cfg.exclusions_file)
 
+        # MOD-01 (item 6): seed the target watchlist from targets.txt, same
+        # startup pattern. Missing file is fine — no targets, no boost.
+        if Path(cfg.targets_file).exists():
+            from .targets import load_targets_from_file
+            load_targets_from_file(resolved_db, cfg.targets_file)
+
         # Chat — required for Banks to function.
         if not cfg.slack_ready:
             raise ValueError(

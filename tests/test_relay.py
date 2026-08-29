@@ -31,6 +31,24 @@ def _outbound(db, chat):
     )
 
 
+def test_dispatch_sends_from_configured_smtp_from(db, monkeypatch):
+    # Approved outreach must go out FROM Josh's configured address, not the
+    # Resend sandbox default (client: outreach from jbkantor@gmail.com).
+    from banks.config import BanksConfig
+    from banks import relay as relay_mod
+
+    res = _outbound(db, FakeChatPort())
+    apply_action(db, ButtonAction.APPROVE, res.draft_ref, "U1")
+
+    cfg = BanksConfig(None, None, smtp_from="jbkantor@gmail.com")
+    mailer = FakeMailer()
+    monkeypatch.setattr("banks.config.load_config", lambda: cfg)
+    monkeypatch.setattr("banks.mailer.load_mailer", lambda config=None: mailer)
+
+    relay_mod.dispatch(db)
+    assert mailer.sent and mailer.sent[0]["from"] == "jbkantor@gmail.com"
+
+
 def test_approve_outbound_then_relay_sends_once(db):
     res = _outbound(db, FakeChatPort())
     apply_action(db, ButtonAction.APPROVE, res.draft_ref, "U1")  # reads intent

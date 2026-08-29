@@ -114,3 +114,93 @@ def test_manual_csv_roundtrip(tmp_path):
         w.writerow(["vibes", "Sarah", "sarah@vibes.com", "true", "VP Sales", ""])
     out = port.retrieve(bid)
     assert out and out[0].email == "sarah@vibes.com" and out[0].verified is True
+
+
+# --- Live Clay port: webhook push + Sheet-buffer pull -----------------------
+
+from banks.config import BanksConfig
+from banks.contact_enrichment import (LiveClayEnrichmentPort, drain_submitted,
+                                      select_enrichment_port)
+
+
+def _cfg(**kw) -> BanksConfig:
+    # slack_bot_token + slack_channel_id are required positional; default None.
+    return BanksConfig(None, None, **kw)
+
+
+def test_clay_submit_raises_without_webhook():
+    # No webhook URL configured → refuse rather than pretend to enrich.
+    port = LiveClayEnrichmentPort(_cfg())
+    with pytest.raises(RuntimeError):
+        port.submit([EnrichmentRequest(company="vibes")])
+
+
+def test_clay_retrieve_pending_when_batch_absent():
+    cfg = _cfg(clay_webhook_url="https://x", enrichment_sheet_id="sid")
+    # Sheet has a row, but for a different batch → this batch still pending.
+    port = LiveClayEnrichmentPort(cfg, sheet_reader=lambda: [
+        {"batch_id": "other", "company": "vibes", "email": "a@b.com"}])
+    assert port.retrieve("clay-123") is None
+
+
+def test_clay_retrieve_parses_sheet_rows():
+    cfg = _cfg(clay_webhook_url="https://x", enrichment_sheet_id="sid")
+    port = LiveClayEnrichmentPort(cfg, sheet_reader=lambda: [
+        {"batch_id": "clay-1", "company": "vibes", "name": "Sarah",
+         "email": "sarah@vibes.com", "verified": "true", "title": "VP Sales",
+         "linkedin_url": ""},
+        {"batch_id": "other", "company": "acme", "name": "X", "email": "x@a.com"},
+    ])
+    out = port.retrieve("clay-1")
+    assert out and len(out) == 1
+    assert out[0].email == "sarah@vibes.com" and out[0].verified is True
+
+
+def test_select_port_none_without_creds():
+    assert select_enrichment_port(_cfg()) is None
+
+
+def test_select_port_live_when_configured():
+    cfg = _cfg(clay_webhook_url="https://x", enrichment_sheet_id="sid")
+    assert isinstance(select_enrichment_port(cfg), LiveClayEnrichmentPort)
+
+
+def test_drain_submitted_applies_all_batches(db_path):
+    oid = _seed_opp(db_path, "vibes")
+    enqueue_company(db_path, "vibes", "VP Sales", oid)
+    port = FakeEnrichmentPort({"vibes": [EnrichmentResult(
+        company="vibes", name="Sarah", email="sarah@vibes.com", verified=True)]})
+    submit_pending(db_path, port)
+    written = drain_submitted(db_path, port)
+    assert written == 1
+    with cursor(db_path) as cur:
+        row = cur.execute("SELECT status FROM enrichment_queue LIMIT 1").fetchone()
+    assert row["status"] == "done"
+
+
+def test_submit_only_marks_selected_rows(db_path):
+    # A cold company queued while submit()'s webhook push is in flight must stay
+    # 'pending' — not get marked submitted for a batch it was never part of.
+    oid = _seed_opp(db_path, "vibes")
+    enqueue_company(db_path, "vibes", "VP Sales", oid)
+
+    class MidFlightPort(FakeEnrichmentPort):
+        def submit(self, requests):
+            # Simulate a concurrent enqueue happening during the network call.
+            enqueue_company(db_path, "latecomer", "CRO", None)
+            return super().submit(requests)
+
+    submit_pending(db_path, MidFlightPort())
+    with cursor(db_path) as cur:
+        late = cur.execute(
+            "SELECT status FROM enrichment_queue WHERE company_normalized='latecomer'"
+        ).fetchone()
+    assert late["status"] == "pending"  # survives for the next batch
+
+
+def test_enrichment_jobs_noop_without_creds(db_path, monkeypatch):
+    # run_job for enrichment jobs must no-op (not raise) when unprovisioned.
+    from banks import jobs
+    monkeypatch.setattr("banks.config.load_config", lambda: _cfg())
+    assert jobs.run_job("enrichment_submit", db_path, FakeChatPort()) is None
+    assert jobs.run_job("enrichment_retrieve", db_path, FakeChatPort()) is None

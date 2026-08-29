@@ -17,3 +17,14 @@
 # before launch — see CLIENT_QUERIES item #12. Do not invent entries.
 
 company: Rent Solutions
+
+# Avoid list from Josh's target-company research (2026-08-29). EDGE is his
+# current employer (hard never-contact); the rest are acquired / subsidiaries /
+# owned / PM operators — poor fit AND confirmed by Josh to hard-exclude.
+company: EDGE
+company: Azibo
+company: Zego
+company: PayLease
+company: Buildium
+company: Mynd
+company: Poplar Homes

@@ -130,8 +130,13 @@ def enrich_opportunity(
     location = ex.get("location") or ""
 
     pursuit_mode = row["pursuit_mode"] or "full_time"
+    from .normalise import classify_role_type
+    from .targets import target_priority
+    role_type = classify_role_type(row["title"] or "", text or "")
     fit, tier, needs_enrichment = _score.score_role(
-        comp_k=comp_k, industry=industry, location=location, pursuit_mode=pursuit_mode)
+        comp_k=comp_k, industry=industry, location=location, pursuit_mode=pursuit_mode,
+        target_priority=target_priority(db_path, row["company_normalized"] or ""),
+        role_type=role_type)
 
     with cursor(db_path) as cur:
         cur.execute(

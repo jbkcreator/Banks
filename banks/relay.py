@@ -230,12 +230,18 @@ def relay_run(db_path: str, mailer: Mailer, from_addr: str = DEFAULT_FROM) -> Re
     return RelayResult(sent=sent, skipped=skipped, failed=failed, blocked=blocked)
 
 
-def dispatch(db_path: str, from_addr: str = DEFAULT_FROM) -> RelayResult:
+def dispatch(db_path: str, from_addr: str | None = None) -> RelayResult:
     """Production entry point for the scheduled relay_dispatch job (jobs.py).
 
     Selects the live mailer here — R-D1 means only relay.py/mailer.py may
     import the send credential, so the mailer choice can't live in jobs.py,
     which is agent-side and shared with every other standing job.
+
+    From address defaults to the configured sending identity (`smtp_from` —
+    Josh's real address), not the Resend sandbox, so approved outreach actually
+    comes from him. Falls back to DEFAULT_FROM only if nothing is configured.
     """
+    from .config import load_config
     from .mailer import load_mailer
-    return relay_run(db_path, load_mailer(), from_addr)
+    sender = from_addr or load_config().smtp_from or DEFAULT_FROM
+    return relay_run(db_path, load_mailer(), sender)

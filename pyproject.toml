@@ -5,6 +5,14 @@ description = "Banks — Josh's personal operations AI employee. Separate infras
 requires-python = ">=3.11"
 dependencies = [
     "slack_sdk>=3.27",
+    # HTTP client used across ports (Clay webhook, JD fetch, Resend mailer).
+    # Imported at module load in contact_enrichment/enrich/mailer, so the
+    # scheduled enrichment jobs need it present even on the unprovisioned no-op.
+    "httpx>=0.27",
+    # Google service-account clients — read-only Calendar + the enrichment Sheet
+    # buffer. Imported lazily (only on the live path), declared so live works.
+    "google-auth>=2.0",
+    "google-api-python-client>=2.0",
 ]
 
 [project.optional-dependencies]

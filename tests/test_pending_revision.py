@@ -166,11 +166,23 @@ def test_non_approver_message_does_not_consume_slot(db_path):
 
 # --- career-facts loader ----------------------------------------------------
 
-def test_load_career_facts_empty_file():
-    # the repo's career-facts.md is placeholder-only → empty
-    facts = load_career_facts()
+def test_load_career_facts_empty_file(tmp_path):
+    # a placeholder-only file (headers + comments, no facts) → empty
+    p = tmp_path / "career-facts.md"
+    p.write_text(
+        "# Banks Memory\n\n## Identity\n\n<!-- name -->\n\n## Experience\n\n<!-- -->\n",
+        encoding="utf-8",
+    )
+    facts = load_career_facts(str(p))
     assert isinstance(facts, CareerFacts)
     assert facts.is_empty()
+
+
+def test_load_career_facts_repo_file_populated():
+    # the repo's career-facts.md is filled from Josh's resume → not empty
+    facts = load_career_facts()
+    assert not facts.is_empty()
+    assert facts.identity and facts.experience and facts.seeking
 
 
 def test_load_career_facts_missing_file():
