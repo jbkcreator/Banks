@@ -27,8 +27,30 @@ def test_classify_role_type(title, expected):
 def test_anti_type_beats_overlapping_good_keyword():
     # "Sales Development Representative" contains "sales" but must not read as AE.
     assert classify_role_type("Sales Development Representative") == "sdr_bdr"
-    # "Account Manager" contains "account" but is CS, not AE.
-    assert classify_role_type("Account Manager") == "customer_success"
+
+
+def test_bare_account_manager_not_penalised():
+    # Enterprise/strategic AM can be full-cycle — must not be forced to CS/Tier C.
+    assert classify_role_type("Account Manager") == "unknown"
+    assert classify_role_type("Strategic Account Manager") == "unknown"
+    # But an explicit renewals title still reads as CS.
+    assert classify_role_type("Account Manager, Renewals") == "customer_success"
+
+
+def test_jd_mentions_do_not_poison_title():
+    # A senior sales role whose JD mentions collaborating with SDRs/CS is NOT
+    # itself an SDR/CS role — anti-types come from the title only.
+    assert classify_role_type(
+        "VP Sales", "Partner with SDRs and Customer Success to land deals"
+    ) == "strategic_growth"
+    assert classify_role_type(
+        "Director of Strategic Growth", "Manage BDR and renewals motions"
+    ) == "strategic_growth"
+
+
+def test_sales_leadership_titles_are_strategic_growth():
+    for t in ("VP Sales", "Head of Sales", "Chief Revenue Officer", "CRO"):
+        assert classify_role_type(t) == "strategic_growth"
 
 
 def test_good_type_lifts_score():

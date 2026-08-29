@@ -257,13 +257,20 @@ def submit_pending(db_path: str, port: EnrichmentPort) -> str | None:
         ).fetchall()]
     if not rows:
         return None
+    ids = [r["id"] for r in rows]
     reqs = [EnrichmentRequest(company=r["company_normalized"], role_hint=r["role_hint"])
             for r in rows]
     batch_id = port.submit(reqs)
+    # Mark ONLY the rows we actually submitted. A cold opportunity queued while
+    # the webhook push was in flight must stay 'pending' for the next batch —
+    # updating every pending row would mark it submitted without ever sending it,
+    # then retrieve finds no result and fails it (lost forever). Concurrent
+    # writers (scheduler + Socket listener) make this window real.
+    placeholders = ",".join("?" * len(ids))
     with cursor(db_path) as cur:
         cur.execute(
-            "UPDATE enrichment_queue SET status='submitted', batch_id=? "
-            "WHERE status='pending'", (batch_id,))
+            f"UPDATE enrichment_queue SET status='submitted', batch_id=? "
+            f"WHERE id IN ({placeholders})", (batch_id, *ids))
     return batch_id
 
 

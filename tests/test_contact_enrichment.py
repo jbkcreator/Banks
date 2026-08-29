@@ -178,6 +178,26 @@ def test_drain_submitted_applies_all_batches(db_path):
     assert row["status"] == "done"
 
 
+def test_submit_only_marks_selected_rows(db_path):
+    # A cold company queued while submit()'s webhook push is in flight must stay
+    # 'pending' — not get marked submitted for a batch it was never part of.
+    oid = _seed_opp(db_path, "vibes")
+    enqueue_company(db_path, "vibes", "VP Sales", oid)
+
+    class MidFlightPort(FakeEnrichmentPort):
+        def submit(self, requests):
+            # Simulate a concurrent enqueue happening during the network call.
+            enqueue_company(db_path, "latecomer", "CRO", None)
+            return super().submit(requests)
+
+    submit_pending(db_path, MidFlightPort())
+    with cursor(db_path) as cur:
+        late = cur.execute(
+            "SELECT status FROM enrichment_queue WHERE company_normalized='latecomer'"
+        ).fetchone()
+    assert late["status"] == "pending"  # survives for the next batch
+
+
 def test_enrichment_jobs_noop_without_creds(db_path, monkeypatch):
     # run_job for enrichment jobs must no-op (not raise) when unprovisioned.
     from banks import jobs

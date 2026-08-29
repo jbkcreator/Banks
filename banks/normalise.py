@@ -56,36 +56,53 @@ def classify_pursuit_mode(posting_text: str) -> str:
 # adjustment (score.ROLE_ADJUST): the three good types boost, the anti-types
 # heavily penalise so a clear SDR/CS posting sinks to Tier C.
 
-# Anti-types checked FIRST — a "Sales Development Representative" contains "sales"
-# but must not read as a closing AE role.
 def classify_role_type(title: str, jd_text: str = "") -> str:
     """Return one of: ae | strategic_growth | partnerships | sdr_bdr |
-    customer_success | unknown. Title dominates; jd_text is a fallback signal."""
-    text = f"{title} {jd_text}".lower()
+    customer_success | unknown.
 
-    # Anti-types first (their keywords overlap the good ones).
-    if any(w in text for w in (
-            "sdr", "bdr", "sales development", "business development representative",
-            "sales development rep")):
+    Anti-types are read from the TITLE only. A senior role whose JD merely
+    *mentions* collaborating with SDRs or Customer Success is not itself an
+    SDR/CS role — matching those keywords in the JD wrongly buried real target
+    roles (a "VP Sales" JD that says "partner with SDRs and CS"). The JD is only
+    consulted as a bounded fallback for the GOOD types when the title is unknown.
+    Anti-types checked first (their keywords overlap the good ones).
+    """
+    t = title.lower()
+
+    # --- anti-types: TITLE only ---
+    if any(w in t for w in (
+            "sdr", "bdr", "sales development",
+            "business development representative")):
         return "sdr_bdr"
-    if any(w in text for w in (
-            "customer success", "renewals", "account manager", "csm",
-            "retention specialist")):
+    # bare "account manager" is NOT CS — enterprise/strategic AM can be
+    # full-cycle. Only clear renewals/success titles penalise.
+    if any(w in t for w in (
+            "customer success", "renewals", "csm", "retention specialist")):
         return "customer_success"
 
-    # Good types.
-    if any(w in text for w in (
+    # --- good types: title ---
+    if any(w in t for w in (
             "strategic growth", "head of growth", "vp growth", "growth strategy",
-            "director of growth", "revenue leader", "head of revenue")):
+            "director of growth", "revenue leader", "head of revenue",
+            "vp sales", "head of sales", "director of sales", "chief revenue",
+            "cro")):
         return "strategic_growth"
-    if any(w in text for w in (
-            "partnership", "partnerships", "channel", "alliances", "business development"
-            )) and "representative" not in text:
+    if any(w in t for w in (
+            "partnership", "channel", "alliances", "business development")):
         return "partnerships"
-    if any(w in text for w in (
+    if any(w in t for w in (
             "account executive", "ae ", "sales executive", "enterprise sales",
             "quota", "closing", "full-cycle", "full cycle")):
         return "ae"
+
+    # --- title unknown: bounded GOOD-type fallback from the JD (never anti) ---
+    if jd_text:
+        j = jd_text.lower()
+        if any(w in j for w in ("strategic partnerships", "channel partnerships",
+                                "partner ecosystem")):
+            return "partnerships"
+        if any(w in j for w in ("account executive", "full-cycle", "quota-carrying")):
+            return "ae"
     return "unknown"
 
 
