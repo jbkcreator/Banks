@@ -147,3 +147,31 @@ class TestEmailIntake:
         port = LiveImapEmailPort("bad@gmail.com", "wrong-password")
         result = port.get_confirmations()
         assert result == []
+
+    def test_intake_job_noops_without_creds(self, db_path):
+        # run_job('email_intake_poll') must no-op (not raise) when unprovisioned.
+        from banks import jobs
+        from banks.config import BanksConfig
+        import banks.config as cfgmod
+        orig = cfgmod.load_config
+        cfgmod.load_config = lambda: BanksConfig(None, None)
+        try:
+            assert jobs.run_job("email_intake_poll", db_path, FakeChatPort()) is None
+        finally:
+            cfgmod.load_config = orig
+
+    def test_intake_job_ingests_via_live_port(self, db_path, monkeypatch):
+        # With creds set, the job builds the IMAP port and records confirmations.
+        from banks import jobs
+        from banks.config import BanksConfig
+        monkeypatch.setattr(
+            "banks.config.load_config",
+            lambda: BanksConfig(None, None, intake_email="jbkantor@gmail.com",
+                                intake_email_password="app-pw"))
+        monkeypatch.setattr(
+            "banks.emailport.LiveImapEmailPort",
+            lambda email, pw: FakeEmailPort([
+                {"subject": "Your application to AppFolio was received",
+                 "body": "", "from": "", "date": ""}]))
+        result = jobs.run_job("email_intake_poll", db_path, FakeChatPort())
+        assert result == {"ingested": 1, "skipped": 0}

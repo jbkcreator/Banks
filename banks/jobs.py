@@ -78,6 +78,22 @@ def run_job(name: str, db_path: str, chat: ChatPort) -> dict | None:
                       "sent": len(result.sent)}, minutes_saved=0)
         return {"sent": result.sent, "skipped": result.skipped,
                 "failed": result.failed, "blocked": result.blocked}
+    if name == "email_intake_poll":
+        # MOD-01: poll the forwarded-confirmation mailbox over IMAP and record
+        # new opportunities. No-op unless the intake creds are set, so an
+        # unprovisioned Banks skips rather than erroring on every tick.
+        from .config import load_config
+        from .emailport import LiveImapEmailPort
+        from .intake import ingest_email_confirmations
+        cfg = load_config()
+        if not (cfg.intake_email and cfg.intake_email_password):
+            return None
+        port = LiveImapEmailPort(cfg.intake_email, cfg.intake_email_password)
+        ingested, skipped = ingest_email_confirmations(db_path, port, chat)
+        if ingested:
+            log_event(db_path, "draft_created", meta={"job": "email_intake_poll",
+                      "ingested": ingested}, minutes_saved=0)
+        return {"ingested": ingested, "skipped": skipped} if (ingested or skipped) else None
     if name in ("enrichment_submit", "enrichment_retrieve"):
         # MOD-02: Clay enrichment (webhook push + Sheet pull). Both no-op unless
         # the paid creds (webhook URL + Sheet ID) are set, so an unprovisioned

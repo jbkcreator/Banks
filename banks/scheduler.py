@@ -30,8 +30,9 @@ STANDING_JOBS = [
     StandingJob("weekly_scorecard", "weekly", fire_time=time(17, 0), weekday=4),  # Friday
     StandingJob("quarterly_rate_optimizer", "quarterly"),
     StandingJob("weekly_opportunity_cost_meter", "weekly", fire_time=time(17, 0), weekday=4),
-    # MOD-01 forwarded email intake — polls banks-intake@gmail.com every 10 min.
-    StandingJob("email_intake_poll", "interval_10min"),
+    # MOD-01 forwarded email intake — polls the intake mailbox every 10 min.
+    # 'interval' (not 'interval_10min') so the live dispatcher (due_jobs) fires it.
+    StandingJob("email_intake_poll", "interval", interval_minutes=10),
     # Relay dispatch (PR #9 review gap): an Approve only flips send_intents to
     # 'approved' — something has to actually call relay_run(). Short interval
     # so an approved draft doesn't sit for hours before it's sent.
