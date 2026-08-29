@@ -41,7 +41,13 @@ Bay Street Capital LLC — Tampa Bay real estate investment platform (25–50 do
 
 ## What Josh is looking for (opportunity criteria)
 
-Target roles: Director / VP of Revenue, Strategic Partnerships, Go-to-Market, or Business Development — in PropTech, vertical SaaS, real estate fintech, and real estate lending.
-Primary mode: apply to actual posted full-time roles, same as a normal job search.
-Fractional / consulting: open to it, but only reactively — when a specific role or conversation points that way. Banks must NOT proactively pitch consulting to companies that have not posted a role.
-Compensation: flexible — position as open / negotiable. Do not lead with a number or a fixed range.
+> NOTE: the single plain line below is `seeking` — rendered VERBATIM into outreach
+> drafts (lanes.py), so it must read as sendable prose: no dollar figures, no
+> internal directives. The policy lines are blockquotes (`>`) the loader skips —
+> recorded for humans, never drafted. Policy is enforced in code, not here.
+
+Senior GTM leadership — Director / VP of Revenue, Strategic Partnerships, Go-to-Market, or Business Development — in PropTech, vertical SaaS, real estate fintech, and real estate lending.
+
+> Primary mode: apply to actual posted full-time roles, same as a normal job search.
+> Fractional / consulting: open to it, but only reactively — when a specific role or conversation points that way. Never proactively pitched to companies that haven't posted a role (enforced: BANKS_PROACTIVE_CONSULTING off by default).
+> Compensation: flexible — position as open / negotiable. Never lead with a number or a fixed range.
