@@ -26,7 +26,8 @@ from .exclusion import is_target_excluded
 from .flow import Proposed
 from .intake import _surface_opportunity  # reuse the one surfacing builder
 from .llmport import LLMPort
-from .normalise import classify_pursuit_mode, normalise_company
+from .normalise import (classify_pursuit_mode, classify_role_type,
+                        normalise_company)
 from .opportunity import mark_application_drafted, record_opportunity
 from . import score as _score
 
@@ -142,10 +143,11 @@ def ingest_manual(
         return ManualIntakeResult(dup, "-", 0, False, False, None, skipped="duplicate")
 
     pursuit_mode = classify_pursuit_mode(f"{title} {jd_text or ''}")
+    role_type = classify_role_type(title, jd_text or "")
     from .targets import target_priority
     fit, tier, needs_enrichment = _score.score_role(
         comp_k=comp_k, industry=industry, location=location, pursuit_mode=pursuit_mode,
-        target_priority=target_priority(db_path, company))
+        target_priority=target_priority(db_path, company), role_type=role_type)
 
     opp_id = record_opportunity(
         db_path, title, "manual", fit,

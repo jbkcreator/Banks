@@ -28,7 +28,8 @@ from .dedup import find_duplicate, find_duplicate_contact
 from .enforcement import Draft
 from .exclusion import is_target_excluded
 from .flow import Proposed, propose
-from .normalise import classify_pursuit_mode, map_simplify_status, normalise_company
+from .normalise import (classify_pursuit_mode, classify_role_type,
+                        map_simplify_status, normalise_company)
 from .opportunity import mark_application_drafted, record_opportunity
 from .packets import DecisionPacket
 from .store import cursor
@@ -57,16 +58,16 @@ def _score_row(parsed: dict, comp_k: float | None, vertical: str | None,
                target_priority: int | None = None) -> tuple[int, str, str, bool]:
     """Return (fit_score, tier, pursuit_mode, needs_enrichment) — via score.score_role.
 
-    target_priority (from the watchlist, item 6) applies a graded fit bump so a
-    posting at one of Josh's target companies floats up.
+    target_priority (watchlist, item 6) applies a graded company bump; role_type
+    (item 7) screens the title so target roles lift and SDR/BDR/CS sink.
     """
-    pursuit_mode = classify_pursuit_mode(
-        f"{parsed.get('title', '')} {parsed.get('job_type', '')}"
-    )
+    title_blob = f"{parsed.get('title', '')} {parsed.get('job_type', '')}"
+    pursuit_mode = classify_pursuit_mode(title_blob)
+    role_type = classify_role_type(parsed.get("title", ""), parsed.get("description", ""))
     fit, tier, needs_enrichment = _score.score_role(
         comp_k=comp_k, industry=vertical,
         location=parsed.get("location", ""), pursuit_mode=pursuit_mode,
-        target_priority=target_priority)
+        target_priority=target_priority, role_type=role_type)
     return fit, tier, pursuit_mode, needs_enrichment
 
 

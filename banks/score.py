@@ -113,10 +113,26 @@ def compute_fit_score(
 # lives in targets.py, keeping score.py pure). See banks/targets.py.
 TARGET_BONUS: dict[int, int] = {1: 12, 2: 8, 3: 4}
 
+# Role-type adjustment (item 7). The three role types Josh targets get a lift;
+# the two he rules out (SDR/BDR, pure CS/renewals) get a heavy penalty so a clear
+# match sinks to Tier C and never surfaces. unknown → 0 (neutral). Keyword
+# classification lives in normalise.classify_role_type.
+ROLE_ADJUST: dict[str, int] = {
+    "ae": 10,
+    "strategic_growth": 10,
+    "partnerships": 10,
+    # -35 (not -30): even the best-case anti-type (proptech + remote + neutral
+    # comp ≈ 82) must land under Tier B (50) so a clear SDR/CS role never surfaces.
+    "sdr_bdr": -35,
+    "customer_success": -35,
+    "unknown": 0,
+}
+
 
 def score_role(comp_k, industry, location, pursuit_mode,
                cfg: ScoringConfig = DEFAULT_SCORING,
-               target_priority: int | None = None):
+               target_priority: int | None = None,
+               role_type: str | None = None):
     """Score one role end to end. The single home for the fit→tier→hold decision
     (was copy-pasted across intake/manual_intake/enrich).
 
@@ -126,6 +142,9 @@ def score_role(comp_k, industry, location, pursuit_mode,
 
     target_priority (1/2/3) adds a graded watchlist bump to the fit, capped at
     100, so a posting at one of Josh's target companies floats up. None = no bump.
+
+    role_type (item 7) applies ROLE_ADJUST: the three target role types lift, the
+    two anti-types (SDR/BDR, CS/renewals) sink to Tier C. None = no adjustment.
     """
     fit = compute_fit_score(
         score_comp(comp_k, cfg),
@@ -136,5 +155,7 @@ def score_role(comp_k, industry, location, pursuit_mode,
     )
     if target_priority is not None:
         fit = min(100, fit + TARGET_BONUS.get(target_priority, 0))
+    if role_type is not None:
+        fit = max(0, min(100, fit + ROLE_ADJUST.get(role_type, 0)))
     needs_enrichment = not (industry and str(industry).strip())
     return fit, assign_tier(fit, cfg), needs_enrichment
