@@ -1,0 +1,73 @@
+BANKS — SERVER DEPLOY
+=====================
+
+Two long-running processes + a nightly backup. Both processes need the BANKS_*
+env (the code does NOT auto-load .env — systemd's EnvironmentFile provides it).
+
+Assumes the repo at /root/banks and a venv at /root/banks/.venv
+(python3 -m venv .venv ; source .venv/bin/activate ; pip install -e .).
+
+
+0. PREREQS (once)
+-----------------
+  cd /root/banks
+  git pull origin main
+  source .venv/bin/activate && pip install -e .
+  # .env must contain the BANKS_* names (not just CLIENT_SLACK_*):
+  #   BANKS_SLACK_BOT_TOKEN, BANKS_SLACK_APP_TOKEN, BANKS_CHANNEL_ID,
+  #   BANKS_JOBS_CHANNEL_ID, BANKS_APPROVER_USER_ID, BANKS_ANTHROPIC_API_KEY,
+  #   BANKS_DB_PATH=/root/banks/banks.db
+  # (SMTP/IMAP/Clay vars when those creds land.)
+  # seed db + wall + targets:
+  python -c "from banks.container import Container; Container.live()"
+
+
+1. INSTALL THE SERVICES
+-----------------------
+  # link the unit files from the repo so `git pull` updates them in place:
+  systemctl link /root/banks/deploy/banks-scheduler.service
+  systemctl link /root/banks/deploy/banks-listener.service
+  systemctl daemon-reload
+
+  systemctl enable --now banks-scheduler
+  systemctl enable --now banks-listener
+
+
+2. VERIFY
+---------
+  systemctl status banks-scheduler banks-listener
+  journalctl -u banks-listener -n 30 --no-pager     # expect "listener connected"
+  journalctl -u banks-scheduler -n 30 --no-pager    # expect "scheduler up ... ticking"
+
+
+3. NIGHTLY BACKUP (cron)
+------------------------
+  chmod +x /root/banks/deploy/backup.sh
+  crontab -e
+  # add (03:15 daily):
+  15 3 * * * BANKS_DB_PATH=/root/banks/banks.db /root/banks/deploy/backup.sh >> /root/backups/backup.log 2>&1
+
+
+4. UPDATES (after a git pull)
+-----------------------------
+  cd /root/banks && git pull origin main
+  source .venv/bin/activate && pip install -e .        # if deps changed
+  systemctl restart banks-scheduler banks-listener
+
+
+KILL SWITCH
+-----------
+  Josh types "stop all" (or any halt phrase) in Slack -> halt flag set -> both
+  processes freeze work (scheduler skips ticks, relay won't send). Clearing the
+  halt resumes without a restart. To hard-stop: systemctl stop banks-scheduler
+  banks-listener.
+
+
+NOTES
+-----
+- SQLite, single file, WAL. One writer at a time; low volume (one user) is fine.
+  Both services write the SAME db (BANKS_DB_PATH) — do not point them at
+  different files.
+- No public inbound port. Slack is an OUTBOUND WebSocket (Socket Mode), which is
+  why the hard wall stays physical.
+- Logs: journalctl -u banks-scheduler -f  /  journalctl -u banks-listener -f

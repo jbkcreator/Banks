@@ -1,0 +1,21 @@
+[Unit]
+# Banks Slack listener — the always-on Socket Mode process that catches Josh's
+# button taps (Approve/Skip/Snooze/Mark-done/Revise) over an outbound WebSocket.
+# No public port. If this is down, taps don't register (reaction fallback aside).
+Description=Banks Slack Socket Mode listener (buttons)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/banks
+EnvironmentFile=/root/banks/.env
+ExecStart=/root/banks/.venv/bin/python -m banks.socket_listener
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

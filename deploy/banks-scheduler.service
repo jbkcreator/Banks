@@ -1,0 +1,22 @@
+[Unit]
+# Banks clock — fires the standing jobs (morning queue, cadence, relay dispatch,
+# email + enrichment polls) every minute via `python -m banks.run`.
+Description=Banks scheduler (standing-job clock)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/banks
+# EnvironmentFile loads BANKS_* creds (the code does NOT auto-load .env).
+EnvironmentFile=/root/banks/.env
+ExecStart=/root/banks/.venv/bin/python -m banks.run
+Restart=always
+RestartSec=5
+# journald captures stdout/stderr: `journalctl -u banks-scheduler -f`
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
