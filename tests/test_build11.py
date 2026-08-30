@@ -110,7 +110,11 @@ def test_fake_llm_extract_json():
     assert data["vendor"] == "Plumber"
 
 
-def test_claude_llm_port_raises_without_key():
+def test_claude_llm_port_raises_without_key(monkeypatch):
+    # Force a clean env: the live server exports BANKS_ANTHROPIC_API_KEY, and the
+    # port falls back to load_config() when api_key is None — delenv so the
+    # "no key -> raise" contract is tested regardless of shell state.
+    monkeypatch.delenv("BANKS_ANTHROPIC_API_KEY", raising=False)
     from banks.llmport import ClaudeLLMPort
     with pytest.raises(ValueError, match="BANKS_ANTHROPIC_API_KEY"):
         ClaudeLLMPort(api_key=None)

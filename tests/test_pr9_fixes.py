@@ -172,9 +172,16 @@ def test_relay_dispatch_job_sends_approved_intent(db, monkeypatch):
     assert row["status"] == "sent"
 
 
-def test_relay_dispatch_job_tolerates_unconfigured_mailer(db):
+def test_relay_dispatch_job_tolerates_unconfigured_mailer(db, monkeypatch):
     """No BANKS_SMTP_*/BANKS_RESEND_API_KEY set -> load_mailer() raises;
-    the job must no-op (return None) rather than crash the whole tick."""
+    the job must no-op (return None) rather than crash the whole tick.
+
+    delenv first: the live server exports these, which would configure a mailer
+    and defeat the 'unconfigured' premise — clean env so the test is stable
+    regardless of shell state."""
+    for var in ("BANKS_SMTP_HOST", "BANKS_SMTP_USER", "BANKS_SMTP_PASSWORD",
+                "BANKS_RESEND_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
     assert run_job("relay_dispatch", db, FakeChatPort()) is None
 
 

@@ -74,8 +74,10 @@ class _FakeWeb:
 
 
 def _cfg(db_path):
-    # approver None → allow anyone (test), so is_authorized passes for "UJOSH"
-    return dataclasses.replace(load_config(), db_path=db_path,
+    # approver None → allow anyone (test), so is_authorized passes for "UJOSH".
+    # Force it to None explicitly: load_config() reads BANKS_APPROVER_USER_ID
+    # from the env, which is set on the live server and would reject "UJOSH".
+    return dataclasses.replace(load_config(), db_path=db_path, approver_user_id=None,
                               slack_channel_id="C", slack_jobs_channel_id="CJOBS")
 
 
