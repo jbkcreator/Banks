@@ -11,6 +11,8 @@ Type=simple
 User=root
 WorkingDirectory=/root/banks
 EnvironmentFile=/root/banks/.env
+# Unbuffered so print() output reaches journald live (not stuck in a buffer).
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/root/banks/.venv/bin/python -m banks.socket_listener
 Restart=always
 RestartSec=5

@@ -11,6 +11,7 @@ User=root
 WorkingDirectory=/root/banks
 # EnvironmentFile loads BANKS_* creds (the code does NOT auto-load .env).
 EnvironmentFile=/root/banks/.env
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/root/banks/.venv/bin/python -m banks.run
 Restart=always
 RestartSec=5
