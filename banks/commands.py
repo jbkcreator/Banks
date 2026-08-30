@@ -34,13 +34,14 @@ _HELP = (
     "I can look things up:\n"
     "• `who do I know at <company>`\n"
     "• `status <company>`\n"
-    "• `call list`"
+    "• `call list`\n"
+    "• `replied <company>` — I'll stop all follow-ups there"
 )
 
 
 @dataclass(frozen=True)
 class Command:
-    intent: str            # whoat | status | calllist | none
+    intent: str            # whoat | status | calllist | replied | none
     company: str | None = None
 
 
@@ -55,6 +56,12 @@ def route(db_path: str, text: str, llm=None) -> Command:
 
     if "call list" in low or "who should i reach out" in low or "reach out to today" in low:
         return Command("calllist")
+
+    # Reply-safety trigger (review #8): "replied Acme" / "got a reply from Acme"
+    # freezes that company's cadence so nobody who answered gets a follow-up.
+    m = re.search(r"(?:got a reply from|replied|reply from|heard back from)\s+(.+)", low)
+    if m:
+        return Command("replied", _clean_company(m.group(1)))
 
     m = re.search(r"\bstatus\s+(?:of\s+|on\s+)?(.+)", low)
     if m:
@@ -100,6 +107,16 @@ def handle_command(db_path: str, cmd: Command) -> str:
         if not cmd.company:
             return "Which company? Try `status Acme`."
         return _company_status(db_path, cmd.company)
+
+    if cmd.intent == "replied":
+        if not cmd.company:
+            return "Which company? Try `replied Acme`."
+        from .normalise import normalise_company
+        from .governance import record_reply
+        n = record_reply(db_path, normalise_company(cmd.company))
+        return (f"🧊 Froze {cmd.company} — reply logged. All pending follow-ups there "
+                f"stopped ({n} opportunit{'y' if n == 1 else 'ies'}). No one who replied "
+                f"will be chased.")
 
     return _HELP
 

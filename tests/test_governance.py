@@ -257,6 +257,36 @@ def test_record_offer(db_path):
     assert summary.get("offer", 0) >= 1
 
 
+# --- reply-safety (review #8): a reply freezes the company's cadence ---------
+
+def test_record_reply_freezes_company_and_stops_cadence(db_path):
+    from banks.governance import record_reply
+    opp_id = _opp(db_path, "acme")
+    lane_id = _lane(db_path, opp_id)
+    queue_cadence(db_path, lane_id, "2026-08-25")
+    # before: 3 touches would come due
+    assert len(due_cadence_touches(db_path, "2026-09-30")) == 3
+
+    n = record_reply(db_path, "acme")
+    assert n == 1
+    assert is_company_frozen(db_path, "acme") is True
+    # after: nobody who replied gets chased — zero due touches
+    assert due_cadence_touches(db_path, "2026-09-30") == []
+
+
+def test_replied_command_triggers_freeze(db_path):
+    from banks.commands import handle_command, route
+    opp_id = _opp(db_path, "acme")
+    lane_id = _lane(db_path, opp_id)
+    queue_cadence(db_path, lane_id, "2026-08-25")
+    cmd = route(db_path, "replied Acme")
+    assert cmd.intent == "replied" and cmd.company.lower() == "acme"
+    msg = handle_command(db_path, cmd)
+    assert "Froze" in msg
+    assert is_company_frozen(db_path, "acme") is True
+    assert due_cadence_touches(db_path, "2026-09-30") == []
+
+
 # --- new: cadence stops on interviewing/closed ---
 
 def test_cadence_stops_when_interviewing(db_path):

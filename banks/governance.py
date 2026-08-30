@@ -125,6 +125,41 @@ def got_reply(db_path: str, opportunity_id: int) -> None:
         )
 
 
+def record_reply(db_path: str, company_normalized: str) -> int:
+    """Company-level 'got a reply' — the reply-safety trigger (client review #8).
+
+    A hiring manager replying at ANY opportunity for the company must stop every
+    pending Day 3/7/14 follow-up there, so nobody who already answered gets
+    chased. Freezes the company and freezes pending cadence across all its
+    opportunities, atomically. Returns the number of opportunities affected.
+
+    Called by the Slack `replied <company>` command / a cadence-card 'Got reply'
+    button — Banks does not read the inbox, so the human tells it once.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with transaction(db_path) as cur:
+        opps = [r["id"] for r in cur.execute(
+            "SELECT id FROM opportunities WHERE company_normalized = ?",
+            (company_normalized,)).fetchall()]
+        cur.execute(
+            "INSERT INTO company_freeze (company_normalized, frozen_at, reason, thaw_at) "
+            "VALUES (?, ?, 'got_reply', NULL) "
+            "ON CONFLICT(company_normalized) DO UPDATE SET "
+            "frozen_at = excluded.frozen_at, reason = excluded.reason, "
+            "thaw_at = excluded.thaw_at",
+            (company_normalized, now))
+        for oid in opps:
+            cur.execute(
+                """UPDATE cadence_queue SET status = 'frozen'
+                   WHERE status = 'pending' AND outreach_lane_id IN (
+                       SELECT id FROM outreach_lanes WHERE opportunity_id = ?)""",
+                (oid,))
+            cur.execute(
+                "INSERT INTO funnel_events (opportunity_id, event_type, ts) VALUES (?, 'replied', ?)",
+                (oid, now))
+    return len(opps)
+
+
 # ---------------------------------------------------------------------------
 # Funnel events
 # ---------------------------------------------------------------------------
