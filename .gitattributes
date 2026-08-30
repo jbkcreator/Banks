@@ -1,0 +1,5 @@
+# Deploy artifacts run on the Linux server — force LF so a Windows checkout can't
+# introduce CRLF that breaks bash (shebang) or systemd unit parsing.
+*.sh            text eol=lf
+*.service       text eol=lf
+deploy/*        text eol=lf
