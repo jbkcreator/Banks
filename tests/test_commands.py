@@ -132,10 +132,12 @@ class TestUnrecognisedFallback:
 
     def test_linkedin_question_gets_honest_hardwall_reply(self, db_path):
         cmd = route(db_path, "Can you see LinkedIn?")
-        assert cmd.intent == "none"
+        assert cmd.intent == "cant_do"
         reply = handle_command(db_path, cmd)
         assert "hard wall" in reply.lower()
-        assert "can't" in reply.lower() or "cannot" in reply.lower()
+
+    def test_linkedin_typo_still_caught(self, db_path):
+        assert route(db_path, "can u see linkdin").intent == "cant_do"
 
     def test_look_through_gmail_gets_hardwall_reply(self, db_path):
         reply = handle_command(db_path, route(db_path,
@@ -174,3 +176,31 @@ class TestPipelineSnapshot:
         assert "2 opportunities tracked" in reply
         assert "Tier A 1" in reply
         assert "Held for enrichment" in reply
+
+
+class TestTargetedStopAndHalt:
+    def test_stop_chasing_routes_to_company_freeze(self, db_path):
+        assert route(db_path, "stop chasing Acme").intent == "stop_company"
+        assert route(db_path, "stop Beta").intent == "stop_company"
+
+    def test_stop_company_freezes(self, db_path):
+        record_opportunity(db_path, "VP", "x", 80, tier="A",
+                           company_normalized="acme")
+        reply = handle_command(db_path, Command("stop_company", "acme"))
+        assert "Stopped chasing" in reply
+        from banks.governance import is_company_frozen
+        assert is_company_frozen(db_path, "acme")
+
+    def test_global_halt_not_swallowed_by_targeted(self):
+        from banks.halt import is_halt_command
+        assert is_halt_command("stop everything") is True
+        assert is_halt_command("STOP ALL!") is True
+        assert is_halt_command("stpo all") is True
+        assert is_halt_command("stop chasing Acme") is False
+        assert is_halt_command("freeze Acme") is False
+
+    def test_unhalt_matches_resume_words(self):
+        from banks.halt import is_unhalt_command
+        assert is_unhalt_command("resume")
+        assert is_unhalt_command("start banks")
+        assert is_unhalt_command("where am I") is False

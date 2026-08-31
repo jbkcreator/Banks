@@ -23,12 +23,16 @@ from .store import cursor
 from .warmpath import describe_contact, find_referral_paths
 
 _ROUTER_SYSTEM = (
-    "You classify a Slack message into one of three job-search retrieval "
-    "intents, or none. Return JSON only: "
-    '{"intent": "whoat|status|calllist|none", "company": "<name or null>"}. '
-    "whoat = who does the user know at a company; status = pipeline status of a "
-    "company; calllist = who to reach out to today. No other intents exist."
+    "You classify a Slack message into one job-search retrieval intent, or none. "
+    "Return JSON only: "
+    '{"intent": "whoat|status|calllist|pipeline|cant_do|none", "company": "<name or null>"}. '
+    "whoat = who does the user know at a company; status = pipeline status of ONE "
+    "company; calllist = who to reach out to today; pipeline = an overall snapshot "
+    "of where they stand across all applications ('where am I', 'how's my search'); "
+    "cant_do = asking Banks to read their live inbox or browse LinkedIn/Gmail "
+    "(which it cannot do). Otherwise none. No other intents exist."
 )
+_LLM_INTENTS = ("whoat", "status", "calllist", "pipeline", "cant_do")
 
 _MENU = (
     "• `where am I` — a snapshot of your whole pipeline\n"
@@ -112,19 +116,36 @@ def route(db_path: str, text: str, llm=None) -> Command:
     if m:
         return Command("replied", _clean_company(m.group(1)))
 
+    # Targeted stop — "stop chasing Acme" freezes ONE company (not a global halt;
+    # halt.is_halt_command already excludes this shape). Same freeze effect as a
+    # reply, so nothing more goes out to that company.
+    m = re.search(r"stop (?:chasing|pursuing|contacting|following up(?: on| with)?|"
+                  r"reaching out to)\s+(.+)", low)
+    if m:
+        return Command("stop_company", _clean_company(m.group(1)))
+    m = re.search(r"^stop\s+(.+)", low)   # "stop Acme" (global stop intercepted upstream)
+    if m:
+        return Command("stop_company", _clean_company(m.group(1)))
+
     m = re.search(r"\bstatus\s+(?:of\s+|on\s+)?(.+)", low)
     if m:
         return Command("status", _clean_company(m.group(1)))
+
+    # Capability question (LinkedIn/Gmail/inbox) — honest "can't, hard wall".
+    # Keyword fast-path (typo-tolerant); the LLM below also maps to cant_do.
+    if _CANT_DO.search(low):
+        return Command("cant_do", raw=t)
 
     if llm is not None:
         try:
             data = llm.extract_json(
                 _ROUTER_SYSTEM, t,
-                schema_hint='{"intent":"whoat|status|calllist|none","company":"str|null"}',
+                schema_hint='{"intent":"whoat|status|calllist|pipeline|cant_do|none","company":"str|null"}',
             )
             intent = data.get("intent", "none")
-            if intent in ("whoat", "status", "calllist"):
-                return Command(intent, _clean_company(data.get("company")) if data.get("company") else None)
+            if intent in _LLM_INTENTS:
+                company = _clean_company(data.get("company")) if data.get("company") else None
+                return Command(intent, company, raw=t)
         except Exception:
             pass
 
@@ -151,6 +172,19 @@ def handle_command(db_path: str, cmd: Command) -> str:
             role = c.get("title") or c.get("position") or ""
             lines.append(f"• {c.get('name') or 'contact'}{f' ({role})' if role else ''}")
         return "Today's call list:\n" + "\n".join(lines)
+
+    if cmd.intent == "cant_do":
+        return _CANT_DO_REPLY
+
+    if cmd.intent == "stop_company":
+        if not cmd.company:
+            return "Which company? Try `stop chasing Acme`."
+        from .normalise import normalise_company
+        from .governance import record_reply
+        n = record_reply(db_path, normalise_company(cmd.company))
+        return (f"🧊 Stopped chasing *{cmd.company}* — all follow-ups there frozen "
+                f"({n} opportunit{'y' if n == 1 else 'ies'}). "
+                f"Everything else is still running.")
 
     if cmd.intent == "pipeline":
         return _pipeline_summary(db_path)

@@ -25,7 +25,7 @@ from .attack_queue import (
 )
 from .commands import handle_command, route
 from .config import BanksConfig, load_config
-from .halt import is_halt_command, set_halt
+from .halt import clear_halt, is_halt_command, is_unhalt_command, set_halt
 from .queue_actions import mark_done, skip_item, snooze_item
 from .revisions import (
     apply_revision,
@@ -208,7 +208,24 @@ def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
         set_halt(reason=f"operator command: '{text.strip()}'")
         web.chat_postMessage(
             channel=cfg.slack_channel_id or "",
-            text="🛑 *Banks halted.* All jobs suspended. Restart to resume.",
+            text=("🛑 *Banks halted — ALL jobs suspended.* Nothing will send until "
+                  "you say `resume`. (To stop just one company instead, say "
+                  "`stop chasing <company>` or `replied <company>`.)"),
+        )
+        return
+
+    # UN-HALT — approver-only (re-enabling sends must not be open to anyone).
+    if is_unhalt_command(text):
+        if is_bot:
+            return
+        if not is_authorized(cfg, user_id):
+            print(f"[listener] IGNORED resume from user={user_id!r} "
+                  f"(approver={cfg.approver_user_id!r})", flush=True)
+            return
+        clear_halt()
+        web.chat_postMessage(
+            channel=cfg.slack_channel_id or "",
+            text="✅ *Banks resumed.* Standing jobs run again on the next tick.",
         )
         return
 
