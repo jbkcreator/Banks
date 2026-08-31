@@ -279,6 +279,52 @@ def load_env_file(path: Path) -> int:
     return loaded
 
 
+def post_live(to_addr: str) -> int:
+    """Post a REAL approvable card to the client #banks-jobs channel for Josh.
+
+    Unlike the simulated run, this writes to the PRODUCTION banks.db (the DB the
+    live listener reads) and posts through the live Slack chat, so Josh's actual
+    tap flows: his click -> listener -> apply_action -> intent 'approved' ->
+    scheduler relay_dispatch (<=5 min) -> real SMTP send to `to_addr`.
+
+    Recipient is an address WE own and the card is marked TEST, so the tap can
+    never reach a real hiring manager. Leaves the card up; does not send here.
+    """
+    from banks.container import Container
+    c = Container.live()  # prod db + live Slack chat + real mailer, exclusions seeded
+    db_path = c.db_path
+
+    opp_id = record_opportunity(
+        db_path, "TEST - Banks live approval proof", "evidence", 90,
+        tier="A", company_normalized=TEST_COMPANY, status="sourced")
+    packet = DecisionPacket(
+        kind="opportunity",
+        decision="TEST - tap Approve to prove the live send path (goes to us, not a real person).",
+        recommendation="Approve: fires a real email to our own test inbox within ~5 min.",
+        alternative="Reject - nothing sends.",
+        evidence="Banks live critical-path proof. Safe to approve.",
+        default_if_unanswered="No action.",
+        reversible=True,
+    )
+    draft = Draft(
+        kind="evidence",
+        to=to_addr,
+        subject="[BANKS TEST] live approval proof - please ignore",
+        body=("Automated TEST: if you're reading this, Josh's real Slack tap drove a "
+              "real send end to end. Not real outreach."),
+    )
+    proposed = propose(db_path, packet, draft, c.chat, send_channel=SendChannel.SENDAS)
+    ref = proposed.draft_ref
+    _seed_lane(db_path, opp_id, ref, "hiring_manager")
+    print(f"posted live card to #banks-jobs: opportunity {opp_id}, draft_ref {ref}")
+    print(f"recipient on approve: {to_addr}")
+    print("Ask Josh to tap Approve. Then watch:")
+    print("  journalctl -u banks-listener -f     # his tap -> apply_action")
+    print("  journalctl -u banks-scheduler -f    # relay_dispatch -> real send (<=5 min)")
+    print(f"Confirm the email lands in {to_addr}.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Banks 5 critical-paths evidence run.")
     ap.add_argument("--to", default="heusolutions@gmail.com",
@@ -287,10 +333,16 @@ def main(argv: list[str] | None = None) -> int:
                     help="use the live IMAP inbox instead of a fake confirmation")
     ap.add_argument("--envfile", default=str(REPO / ".env"),
                     help="path to the .env to load into the environment first")
+    ap.add_argument("--post-live", action="store_true",
+                    help="post a REAL approvable card to #banks-jobs (prod DB) for "
+                         "Josh's own tap, then exit — proves the human-click transport")
     args = ap.parse_args(argv)
 
     n = load_env_file(Path(args.envfile))
     print(f"loaded {n} vars from {args.envfile}")
+
+    if args.post_live:
+        return post_live(args.to)
 
     reports = REPO / "docs" / "reports"
     reports.mkdir(parents=True, exist_ok=True)
