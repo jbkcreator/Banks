@@ -325,6 +325,43 @@ def post_live(to_addr: str) -> int:
     return 0
 
 
+def cleanup_prod() -> int:
+    """Delete the TEST evidence rows --post-live wrote into the production DB.
+
+    Removes the evidence opportunity and everything hanging off it (lanes,
+    intents, receipts, cadence, freeze, packet, funnel) so no test row lingers
+    in Josh's real data. Matches on TEST_COMPANY only — never touches real opps.
+    """
+    from banks.config import load_config
+    db_path = load_config().db_path
+    with cursor(db_path) as cur:
+        opp_ids = [r["id"] for r in cur.execute(
+            "SELECT id FROM opportunities WHERE company_normalized=?",
+            (TEST_COMPANY,)).fetchall()]
+        refs = [r["draft_ref"] for r in cur.execute(
+            "SELECT l.draft_ref FROM outreach_lanes l JOIN opportunities o "
+            "ON o.id=l.opportunity_id WHERE o.company_normalized=?",
+            (TEST_COMPANY,)).fetchall()]
+        # also any packet-linked intents on those opps
+        refs += [str(r["source_packet_id"]) for r in cur.execute(
+            "SELECT source_packet_id FROM opportunities WHERE company_normalized=? "
+            "AND source_packet_id IS NOT NULL", (TEST_COMPANY,)).fetchall()]
+        for ref in set(refs):
+            cur.execute("DELETE FROM send_intents WHERE draft_ref=?", (ref,))
+            cur.execute("DELETE FROM sent_receipts WHERE draft_ref=?", (ref,))
+            cur.execute("DELETE FROM decision_packets WHERE id=?", (ref,))
+        for oid in opp_ids:
+            cur.execute("DELETE FROM cadence_queue WHERE outreach_lane_id IN "
+                        "(SELECT id FROM outreach_lanes WHERE opportunity_id=?)", (oid,))
+            cur.execute("DELETE FROM outreach_lanes WHERE opportunity_id=?", (oid,))
+            cur.execute("DELETE FROM funnel_events WHERE opportunity_id=?", (oid,))
+        cur.execute("DELETE FROM company_freeze WHERE company_normalized=?", (TEST_COMPANY,))
+        cur.execute("DELETE FROM opportunities WHERE company_normalized=?", (TEST_COMPANY,))
+    print(f"cleaned {len(opp_ids)} evidence opportunity(ies) + linked rows "
+          f"({len(set(refs))} draft_ref(s)) from {db_path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Banks 5 critical-paths evidence run.")
     ap.add_argument("--to", default="heusolutions@gmail.com",
@@ -336,11 +373,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--post-live", action="store_true",
                     help="post a REAL approvable card to #banks-jobs (prod DB) for "
                          "Josh's own tap, then exit — proves the human-click transport")
+    ap.add_argument("--cleanup", action="store_true",
+                    help="delete the TEST evidence rows from the production DB and exit")
     args = ap.parse_args(argv)
 
     n = load_env_file(Path(args.envfile))
     print(f"loaded {n} vars from {args.envfile}")
 
+    if args.cleanup:
+        return cleanup_prod()
     if args.post_live:
         return post_live(args.to)
 
