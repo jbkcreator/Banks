@@ -51,8 +51,12 @@ class Command:
 # reading his live inbox or browsing LinkedIn would breach the hard wall. When he
 # asks, answer honestly instead of dumping the command menu at him.
 _CANT_DO = re.compile(
-    r"\b(linkedin|gmail|inbox|e-?mail|browse|scrape|log ?in|read my|see my|"
-    r"look (?:through|at) my|check my|go through my)\b", re.IGNORECASE,
+    # includes common misspellings (linkdin/linkedn/gmial) — keyword matching is
+    # brittle to typos, and full NL understanding is out of scope (see the client
+    # scope doc §3: "advanced conversational Slack commands" are deferred).
+    r"\b(linked ?in|linkd?in|linkedn|linkedln|lnkedin|gmail|gmial|inbox|e-?mail|"
+    r"browse|scrape|log ?in|read my|see my|look (?:through|at) my|check my|"
+    r"go through my)\b", re.IGNORECASE,
 )
 _GREETING = re.compile(r"^\s*(hi|hey|hello|yo|good\s+(morning|afternoon|evening)|gm)\b",
                        re.IGNORECASE)
