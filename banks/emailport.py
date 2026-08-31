@@ -115,11 +115,15 @@ def is_confirmation_email(subject: str, body: str = "") -> bool:
 
 def extract_company_from_subject(subject: str) -> str:
     """Best-effort company name extraction from confirmation subject line."""
+    # Stop at verb phrases, " - ", or end of string (space optional before EOL)
+    _STOP = r"(?=\s+(?:has been|was\b|is\b|received|for\b|–|\|)|\s+-\s|\s*$)"
+    _NAME = r"([A-Za-z0-9][A-Za-z0-9 &,.\-]*?)"
     patterns = [
-        r"application (?:to|at|for) ([A-Za-z0-9 &,.\-]+?) (?:for|–|-|\|)",
-        r"(?:at|to) ([A-Za-z0-9 &,.\-]+?) –",
-        r"your application(?: to)? ([A-Za-z0-9 &,.\-]+?) (?:has been|was|is|received)",
-        r"your application(?: to)? ([A-Za-z0-9 &,.\-]+)",
+        r"application (?:to|at|for) " + _NAME + _STOP,
+        r"applied (?:to|at|for) " + _NAME + _STOP,
+        r"submitted to " + _NAME + _STOP,
+        r"applying to " + _NAME + _STOP,
+        r"(?:at|to) " + _NAME + _STOP,
     ]
     for pattern in patterns:
         m = re.search(pattern, subject, re.IGNORECASE)
