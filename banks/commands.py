@@ -23,20 +23,25 @@ from .store import cursor
 from .warmpath import describe_contact, find_referral_paths
 
 _ROUTER_SYSTEM = (
-    "You classify a Slack message into one of three job-search retrieval "
-    "intents, or none. Return JSON only: "
-    '{"intent": "whoat|status|calllist|none", "company": "<name or null>"}. '
-    "whoat = who does the user know at a company; status = pipeline status of a "
-    "company; calllist = who to reach out to today. No other intents exist."
+    "You classify a Slack message into one job-search retrieval intent, or none. "
+    "Return JSON only: "
+    '{"intent": "whoat|status|calllist|pipeline|cant_do|none", "company": "<name or null>"}. '
+    "whoat = who does the user know at a company; status = pipeline status of ONE "
+    "company; calllist = who to reach out to today; pipeline = an overall snapshot "
+    "of where they stand across all applications ('where am I', 'how's my search'); "
+    "cant_do = asking Banks to read their live inbox or browse LinkedIn/Gmail "
+    "(which it cannot do). Otherwise none. No other intents exist."
 )
+_LLM_INTENTS = ("whoat", "status", "calllist", "pipeline", "cant_do")
 
-_HELP = (
-    "I can look things up:\n"
-    "• `who do I know at <company>`\n"
-    "• `status <company>`\n"
-    "• `call list`\n"
-    "• `replied <company>` — I'll stop all follow-ups there"
+_MENU = (
+    "• `where am I` — a snapshot of your whole pipeline\n"
+    "• `status Acme` — where one company stands\n"
+    "• `who do I know at Acme` — warm intros there\n"
+    "• `call list` — who to reach out to today\n"
+    "• `replied Acme` — stop all follow-ups there"
 )
+_HELP = "Here's what I can pull up for you:\n" + _MENU
 
 
 @dataclass(frozen=True)
@@ -50,8 +55,12 @@ class Command:
 # reading his live inbox or browsing LinkedIn would breach the hard wall. When he
 # asks, answer honestly instead of dumping the command menu at him.
 _CANT_DO = re.compile(
-    r"\b(linkedin|gmail|inbox|e-?mail|browse|scrape|log ?in|read my|see my|"
-    r"look (?:through|at) my|check my|go through my)\b", re.IGNORECASE,
+    # includes common misspellings (linkdin/linkedn/gmial) — keyword matching is
+    # brittle to typos, and full NL understanding is out of scope (see the client
+    # scope doc §3: "advanced conversational Slack commands" are deferred).
+    r"\b(linked ?in|linkd?in|linkedn|linkedln|lnkedin|gmail|gmial|inbox|e-?mail|"
+    r"browse|scrape|log ?in|read my|see my|look (?:through|at) my|check my|"
+    r"go through my)\b", re.IGNORECASE,
 )
 _GREETING = re.compile(r"^\s*(hi|hey|hello|yo|good\s+(morning|afternoon|evening)|gm)\b",
                        re.IGNORECASE)
@@ -59,9 +68,9 @@ _ASKED_HELP = re.compile(r"\b(help|what can you|what do you|commands?|options?)\
                          re.IGNORECASE)
 
 _CANT_DO_REPLY = (
-    "I can't read your inbox or browse LinkedIn/Gmail — that's the hard wall by "
-    "design (I only see application confirmations you *forward* me, never your live "
-    "accounts). What I *can* do:\n" + _HELP.split(":\n", 1)[1]
+    "Here's what I can pull up for you:\n" + _MENU +
+    "\n\n_(I can't read your live inbox or browse LinkedIn/Gmail — that's the hard "
+    "wall by design; I only see application confirmations you forward me.)_"
 )
 
 
@@ -94,25 +103,49 @@ def route(db_path: str, text: str, llm=None) -> Command:
     if "call list" in low or "who should i reach out" in low or "reach out to today" in low:
         return Command("calllist")
 
+    # Pipeline snapshot — Josh's real recurring question ("where am I with
+    # applying?"). Deterministic counts from the DB, no LLM, no company needed.
+    if re.search(r"where am i|where do i stand|how am i doing|my pipeline|"
+                 r"pipeline (?:snapshot|status|overview)|update on (?:my )?applications?|"
+                 r"overview of|where.*applications? stand", low):
+        return Command("pipeline")
+
     # Reply-safety trigger (review #8): "replied Acme" / "got a reply from Acme"
     # freezes that company's cadence so nobody who answered gets a follow-up.
     m = re.search(r"(?:got a reply from|replied|reply from|heard back from)\s+(.+)", low)
     if m:
         return Command("replied", _clean_company(m.group(1)))
 
+    # Targeted stop — "stop chasing Acme" freezes ONE company (not a global halt;
+    # halt.is_halt_command already excludes this shape). Same freeze effect as a
+    # reply, so nothing more goes out to that company.
+    m = re.search(r"stop (?:chasing|pursuing|contacting|following up(?: on| with)?|"
+                  r"reaching out to)\s+(.+)", low)
+    if m:
+        return Command("stop_company", _clean_company(m.group(1)))
+    m = re.search(r"^stop\s+(.+)", low)   # "stop Acme" (global stop intercepted upstream)
+    if m:
+        return Command("stop_company", _clean_company(m.group(1)))
+
     m = re.search(r"\bstatus\s+(?:of\s+|on\s+)?(.+)", low)
     if m:
         return Command("status", _clean_company(m.group(1)))
+
+    # Capability question (LinkedIn/Gmail/inbox) — honest "can't, hard wall".
+    # Keyword fast-path (typo-tolerant); the LLM below also maps to cant_do.
+    if _CANT_DO.search(low):
+        return Command("cant_do", raw=t)
 
     if llm is not None:
         try:
             data = llm.extract_json(
                 _ROUTER_SYSTEM, t,
-                schema_hint='{"intent":"whoat|status|calllist|none","company":"str|null"}',
+                schema_hint='{"intent":"whoat|status|calllist|pipeline|cant_do|none","company":"str|null"}',
             )
             intent = data.get("intent", "none")
-            if intent in ("whoat", "status", "calllist"):
-                return Command(intent, _clean_company(data.get("company")) if data.get("company") else None)
+            if intent in _LLM_INTENTS:
+                company = _clean_company(data.get("company")) if data.get("company") else None
+                return Command(intent, company, raw=t)
         except Exception:
             pass
 
@@ -140,6 +173,22 @@ def handle_command(db_path: str, cmd: Command) -> str:
             lines.append(f"• {c.get('name') or 'contact'}{f' ({role})' if role else ''}")
         return "Today's call list:\n" + "\n".join(lines)
 
+    if cmd.intent == "cant_do":
+        return _CANT_DO_REPLY
+
+    if cmd.intent == "stop_company":
+        if not cmd.company:
+            return "Which company? Try `stop chasing Acme`."
+        from .normalise import normalise_company
+        from .governance import record_reply
+        n = record_reply(db_path, normalise_company(cmd.company))
+        return (f"🧊 Stopped chasing *{cmd.company}* — all follow-ups there frozen "
+                f"({n} opportunit{'y' if n == 1 else 'ies'}). "
+                f"Everything else is still running.")
+
+    if cmd.intent == "pipeline":
+        return _pipeline_summary(db_path)
+
     if cmd.intent == "status":
         if not cmd.company:
             return "Which company? Try `status Acme`."
@@ -156,6 +205,33 @@ def handle_command(db_path: str, cmd: Command) -> str:
                 f"will be chased.")
 
     return fallback_reply(cmd.raw)
+
+
+def _pipeline_summary(db_path: str) -> str:
+    """Deterministic one-glance pipeline snapshot from the DB (no LLM, no invented
+    numbers). Answers "where am I with applying?" — Josh's recurring question."""
+    with cursor(db_path) as cur:
+        rows = cur.execute(
+            "SELECT tier, needs_enrichment FROM opportunities").fetchall()
+        frozen = cur.execute("SELECT COUNT(*) c FROM company_freeze").fetchone()["c"]
+    if not rows:
+        return ("No applications tracked yet. Forward a confirmation to your intake "
+                "email, or drop a Simplify export in this channel, and I'll start "
+                "building the pipeline.")
+    total = len(rows)
+    held = sum(1 for r in rows if r["needs_enrichment"])
+    surfaced = [r for r in rows if not r["needs_enrichment"]]
+    a = sum(1 for r in surfaced if r["tier"] == "A")
+    b = sum(1 for r in surfaced if r["tier"] == "B")
+    c = sum(1 for r in surfaced if r["tier"] == "C")
+    noun = "opportunity" if total == 1 else "opportunities"
+    return (
+        f"*Your pipeline — {total} {noun} tracked:*\n"
+        f"• Scored & surfaced: {len(surfaced)}  (Tier A {a}, B {b}, C {c})\n"
+        f"• Held for enrichment (need comp/industry): {held}\n"
+        f"• Companies frozen — you replied, follow-ups stopped: {frozen}\n"
+        f"_Ask `status Acme` for one company, or `call list` for today's outreach._"
+    )
 
 
 def _company_status(db_path: str, company: str) -> str:

@@ -5,14 +5,17 @@ surfaces and Josh knows nobody there, find the requisition owner (VP Sales / CRO
 / Head of Growth — not generic HR) and a verified email, so the outreach lane has
 a real human to reach.
 
-Design (grilled + locked 2026-08-25):
-- Provider is Clay. Its API is batch/async and paid-only, so everything sits
-  behind a batch EnrichmentPort: submit(list) -> batch_id, retrieve(batch_id) ->
-  results (or None while pending). Three implementations:
+Design (grilled + locked 2026-08-25, updated 2026-08-31):
+- Provider is Clay. Everything sits behind a batch EnrichmentPort:
+  submit(list) -> batch_id, retrieve(batch_id) -> results (or None while pending).
+  Four implementations:
     * FakeEnrichmentPort       — instant deterministic results (tests)
     * ManualCSVEnrichmentPort  — writes needs_enrichment.csv, reads the enriched
                                  file back; runnable on Clay's FREE tier by hand
-    * LiveClayEnrichmentPort    — paid push+poll; inert until the plan is upgraded
+    * LiveClaySearchPort       — Clay Search API (Launch plan compatible); finds
+                                 contacts by company+title via GTM database search;
+                                 needs only BANKS_CLAY_API_KEY
+    * LiveClayEnrichmentPort   — original webhook+Sheet design; requires Growth plan
 - verified→email lane, unverified/none→LinkedIn DM draft (routing happens at
   draft time in MOD-03; here we just set the `verified` flag).
 - Results cache in `contacts` (source='clay_enrichment') with a 30-day TTL so the
@@ -22,6 +25,8 @@ Design (grilled + locked 2026-08-25):
 Hard wall intact: no FA imports; credentials via load_config().
 """
 from __future__ import annotations
+
+import json
 
 import csv
 import os
@@ -124,6 +129,98 @@ class ManualCSVEnrichmentPort:
             email=r.get("email", ""),
             verified=str(r.get("verified", "")).strip().lower() in ("1", "true", "yes", "verified"),
             title=r.get("title") or None, linkedin_url=r.get("linkedin_url", "")) for r in rows]
+
+
+class LiveClaySearchPort:
+    """Clay Search API — Launch plan compatible, no webhook or Sheet needed.
+
+    Uses Clay's GTM people-search database (POST /search/filters-mode) to find
+    contacts by company + title keywords. No inbound webhook or Google Sheet buffer
+    required — just BANKS_CLAY_API_KEY.
+
+    submit()   — creates one Clay search per company; stores a JSON map of
+                 {company: search_id} as the batch_id string.
+    retrieve() — runs each search's iterator (3 results, take first), maps to
+                 EnrichmentResult. Returns immediately — search is synchronous.
+                 email is empty (search API returns LinkedIn only); downstream
+                 routing will choose the LinkedIn DM lane.
+    """
+    _BASE = "https://api.clay.com/public/v0"
+    _DEFAULT_TITLES = [
+        "VP Sales", "CRO", "Chief Revenue Officer", "Head of Sales",
+        "VP of Sales", "Director of Sales", "VP Revenue",
+    ]
+
+    def __init__(self, cfg=None) -> None:
+        self._cfg = cfg or load_config()
+        if not self._cfg.clay_api_key:
+            raise RuntimeError("LiveClaySearchPort needs BANKS_CLAY_API_KEY")
+        self._headers = {
+            "clay-api-key": self._cfg.clay_api_key,
+            "Content-Type": "application/json",
+        }
+
+    @staticmethod
+    def _to_domain(company: str) -> str:
+        """Best-effort company name → domain. e.g. 'HubSpot' → 'hubspot.com'."""
+        import re
+        slug = re.sub(r"[^a-z0-9]", "", company.lower())
+        return f"{slug}.com"
+
+    def _title_keywords(self, role_hint: str | None) -> list[str]:
+        if not role_hint:
+            return self._DEFAULT_TITLES
+        words = [w.strip() for w in role_hint.split() if len(w.strip()) > 2]
+        return words or self._DEFAULT_TITLES
+
+    def submit(self, requests: list[EnrichmentRequest]) -> str:
+        mapping: dict[str, str] = {}
+        for req in requests:
+            payload = {
+                "source_type": "people",
+                "filters": {
+                    "company_identifier": [self._to_domain(req.company)],
+                    "job_title_keywords": self._title_keywords(req.role_hint),
+                },
+            }
+            resp = httpx.post(
+                f"{self._BASE}/search/filters-mode",
+                headers=self._headers,
+                json=payload,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            mapping[req.company] = resp.json()["search_id"]
+        return json.dumps(mapping)
+
+    def retrieve(self, batch_id: str) -> list[EnrichmentResult] | None:
+        try:
+            mapping: dict[str, str] = json.loads(batch_id)
+        except (ValueError, TypeError):
+            return None
+        results: list[EnrichmentResult] = []
+        for company, search_id in mapping.items():
+            resp = httpx.post(
+                f"{self._BASE}/search/filters-mode/{search_id}/run",
+                headers=self._headers,
+                json={"limit": 3},
+                timeout=30,
+            )
+            if resp.status_code != 200:
+                continue
+            for row in resp.json().get("data", []):
+                name = row.get("name", "")
+                linkedin_url = row.get("url", "")
+                if not (name and linkedin_url):
+                    continue
+                title = (row.get("latest_experience_title")
+                         or (row.get("matched_experience") or {}).get("job_title"))
+                results.append(EnrichmentResult(
+                    company=company, name=name, email="",
+                    verified=False, title=title, linkedin_url=linkedin_url,
+                ))
+                break  # first usable contact per company
+        return results or None
 
 
 class LiveClayEnrichmentPort:
@@ -333,10 +430,13 @@ def drain_submitted(db_path: str, port: EnrichmentPort) -> int:
 def select_enrichment_port(cfg) -> EnrichmentPort | None:
     """Choose the live enrichment port from config, or None if unprovisioned.
 
-    Live Clay (webhook push + Sheet pull) once both creds are set; otherwise
-    None — the scheduled jobs then no-op rather than fall back to a path that
-    can't actually enrich. The manual-CSV path stays available for hand runs.
+    Priority:
+      1. LiveClaySearchPort    — just needs BANKS_CLAY_API_KEY (Launch plan)
+      2. LiveClayEnrichmentPort — webhook+Sheet path (requires Growth plan)
+      3. None                  — jobs no-op; manual CSV path still available
     """
+    if cfg.clay_api_key:
+        return LiveClaySearchPort(cfg)
     if cfg.clay_webhook_url and cfg.enrichment_sheet_id:
         return LiveClayEnrichmentPort(cfg)
     return None

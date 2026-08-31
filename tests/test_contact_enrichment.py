@@ -116,16 +116,104 @@ def test_manual_csv_roundtrip(tmp_path):
     assert out and out[0].email == "sarah@vibes.com" and out[0].verified is True
 
 
-# --- Live Clay port: webhook push + Sheet-buffer pull -----------------------
+# --- LiveClaySearchPort (Clay Search API, Launch plan) ----------------------
+
+import json as _json
 
 from banks.config import BanksConfig
-from banks.contact_enrichment import (LiveClayEnrichmentPort, drain_submitted,
+from banks.contact_enrichment import (LiveClayEnrichmentPort,
+                                      LiveClaySearchPort, drain_submitted,
                                       select_enrichment_port)
 
 
 def _cfg(**kw) -> BanksConfig:
-    # slack_bot_token + slack_channel_id are required positional; default None.
     return BanksConfig(None, None, **kw)
+
+
+def _fake_http(monkeypatch, *, create_resp=None, run_resp=None):
+    """Patch httpx.post so LiveClaySearchPort never hits the network."""
+    import httpx
+
+    class _Resp:
+        def __init__(self, data, status=200):
+            self._data = data
+            self.status_code = status
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError("err", request=None, response=self)
+
+        def json(self):
+            return self._data
+
+    calls = []
+
+    def _post(url, *, headers=None, json=None, timeout=None):
+        calls.append(url)
+        if "/search/filters-mode" in url and "/run" not in url:
+            return _Resp(create_resp or {"search_id": "srch_test123"})
+        return _Resp(run_resp or {"data": [
+            {"name": "Jane Doe", "url": "https://linkedin.com/in/janedoe",
+             "latest_experience_title": "VP Sales"}
+        ]})
+
+    monkeypatch.setattr("banks.contact_enrichment.httpx.post", _post)
+    return calls
+
+
+def test_clay_search_submit_raises_without_api_key():
+    with pytest.raises(RuntimeError):
+        LiveClaySearchPort(_cfg())
+
+
+def test_clay_search_submit_returns_json_batch_id(monkeypatch):
+    _fake_http(monkeypatch)
+    port = LiveClaySearchPort(_cfg(clay_api_key="k"))
+    batch_id = port.submit([EnrichmentRequest(company="Acme", role_hint="VP Sales")])
+    mapping = _json.loads(batch_id)
+    assert mapping["Acme"] == "srch_test123"
+
+
+def test_clay_search_retrieve_returns_result(monkeypatch):
+    _fake_http(monkeypatch)
+    port = LiveClaySearchPort(_cfg(clay_api_key="k"))
+    batch_id = _json.dumps({"Acme": "srch_test123"})
+    results = port.retrieve(batch_id)
+    assert results and len(results) == 1
+    r = results[0]
+    assert r.company == "Acme"
+    assert r.name == "Jane Doe"
+    assert r.linkedin_url == "https://linkedin.com/in/janedoe"
+    assert r.email == ""  # search API returns LinkedIn only
+    assert r.verified is False
+
+
+def test_clay_search_retrieve_bad_batch_id_returns_none(monkeypatch):
+    _fake_http(monkeypatch)
+    port = LiveClaySearchPort(_cfg(clay_api_key="k"))
+    assert port.retrieve("not-json") is None
+
+
+def test_clay_search_retrieve_empty_data_returns_none(monkeypatch):
+    _fake_http(monkeypatch, run_resp={"data": []})
+    port = LiveClaySearchPort(_cfg(clay_api_key="k"))
+    batch_id = _json.dumps({"Acme": "srch_test123"})
+    assert port.retrieve(batch_id) is None
+
+
+def test_select_port_prefers_search_over_webhook(monkeypatch):
+    # clay_api_key present → LiveClaySearchPort wins even if webhook creds also set
+    cfg = _cfg(clay_api_key="k", clay_webhook_url="https://x", enrichment_sheet_id="sid")
+    port = select_enrichment_port(cfg)
+    assert isinstance(port, LiveClaySearchPort)
+
+
+def test_select_port_falls_back_to_webhook_without_api_key():
+    cfg = _cfg(clay_webhook_url="https://x", enrichment_sheet_id="sid")
+    assert isinstance(select_enrichment_port(cfg), LiveClayEnrichmentPort)
+
+
+# --- Live Clay port: webhook push + Sheet-buffer pull -----------------------
 
 
 def test_clay_submit_raises_without_webhook():
