@@ -225,7 +225,8 @@ def ingest_email_confirmations(
             skipped += 1
             continue
 
-        company = extract_company(subject, body, msg.get("from", "")) or "Unknown (forwarded email)"
+        resolved = extract_company(subject, body, msg.get("from", ""))
+        company = resolved or "Unknown (forwarded email)"
         title = "(from forwarded confirmation)"
 
         if is_target_excluded(db_path, company=company)[0]:
@@ -233,7 +234,11 @@ def ingest_email_confirmations(
             skipped += 1
             continue
 
-        if find_duplicate(db_path, None, title, company) is not None:
+        # Dedup only when we actually resolved a company. Two different real
+        # applications can both fail to resolve -> "Unknown"; deduping those
+        # against each other would silently drop a genuine second application.
+        # Treat Unknown as always-distinct (agreed 2026-08-31).
+        if resolved and find_duplicate(db_path, None, title, company) is not None:
             print(f"[intake] duplicate: company={company!r} — skipped")
             skipped += 1
             continue

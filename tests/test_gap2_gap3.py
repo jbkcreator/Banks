@@ -155,13 +155,25 @@ class TestEmailIntake:
         assert skipped == 1
 
     def test_duplicate_skipped(self, db_path):
+        # Same resolvable company forwarded twice -> one opp, one dedup skip.
         port = FakeEmailPort([
-            {"subject": "Application received — DupeCo", "body": "", "from": "", "date": ""},
-            {"subject": "Application received — DupeCo", "body": "", "from": "", "date": ""},
+            {"subject": "Your application to DupeCo was received", "body": "", "from": "", "date": ""},
+            {"subject": "Your application to DupeCo was received", "body": "", "from": "", "date": ""},
         ])
         ingested, skipped = ingest_email_confirmations(db_path, port, FakeChatPort())
         assert ingested == 1
         assert skipped == 1
+
+    def test_unknown_confirmations_are_always_distinct(self, db_path):
+        # Two DIFFERENT real applications that resolve to no company must NOT
+        # dedup against each other — both are kept.
+        port = FakeEmailPort([
+            {"subject": "We received your application", "body": "", "from": "", "date": ""},
+            {"subject": "Your application has been received", "body": "", "from": "", "date": ""},
+        ])
+        ingested, skipped = ingest_email_confirmations(db_path, port, FakeChatPort())
+        assert ingested == 2
+        assert skipped == 0
 
     def test_excluded_company_skipped(self, db_path):
         from banks.store import cursor
