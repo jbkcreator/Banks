@@ -30,13 +30,14 @@ _ROUTER_SYSTEM = (
     "company; calllist = who to reach out to today. No other intents exist."
 )
 
-_HELP = (
-    "I can look things up:\n"
-    "• `who do I know at <company>`\n"
-    "• `status <company>`\n"
-    "• `call list`\n"
-    "• `replied <company>` — I'll stop all follow-ups there"
+_MENU = (
+    "• `where am I` — a snapshot of your whole pipeline\n"
+    "• `status Acme` — where one company stands\n"
+    "• `who do I know at Acme` — warm intros there\n"
+    "• `call list` — who to reach out to today\n"
+    "• `replied Acme` — stop all follow-ups there"
 )
+_HELP = "Here's what I can pull up for you:\n" + _MENU
 
 
 @dataclass(frozen=True)
@@ -59,9 +60,9 @@ _ASKED_HELP = re.compile(r"\b(help|what can you|what do you|commands?|options?)\
                          re.IGNORECASE)
 
 _CANT_DO_REPLY = (
-    "I can't read your inbox or browse LinkedIn/Gmail — that's the hard wall by "
-    "design (I only see application confirmations you *forward* me, never your live "
-    "accounts). What I *can* do:\n" + _HELP.split(":\n", 1)[1]
+    "Here's what I can pull up for you:\n" + _MENU +
+    "\n\n_(I can't read your live inbox or browse LinkedIn/Gmail — that's the hard "
+    "wall by design; I only see application confirmations you forward me.)_"
 )
 
 
@@ -93,6 +94,13 @@ def route(db_path: str, text: str, llm=None) -> Command:
 
     if "call list" in low or "who should i reach out" in low or "reach out to today" in low:
         return Command("calllist")
+
+    # Pipeline snapshot — Josh's real recurring question ("where am I with
+    # applying?"). Deterministic counts from the DB, no LLM, no company needed.
+    if re.search(r"where am i|where do i stand|how am i doing|my pipeline|"
+                 r"pipeline (?:snapshot|status|overview)|update on (?:my )?applications?|"
+                 r"overview of|where.*applications? stand", low):
+        return Command("pipeline")
 
     # Reply-safety trigger (review #8): "replied Acme" / "got a reply from Acme"
     # freezes that company's cadence so nobody who answered gets a follow-up.
@@ -140,6 +148,9 @@ def handle_command(db_path: str, cmd: Command) -> str:
             lines.append(f"• {c.get('name') or 'contact'}{f' ({role})' if role else ''}")
         return "Today's call list:\n" + "\n".join(lines)
 
+    if cmd.intent == "pipeline":
+        return _pipeline_summary(db_path)
+
     if cmd.intent == "status":
         if not cmd.company:
             return "Which company? Try `status Acme`."
@@ -156,6 +167,33 @@ def handle_command(db_path: str, cmd: Command) -> str:
                 f"will be chased.")
 
     return fallback_reply(cmd.raw)
+
+
+def _pipeline_summary(db_path: str) -> str:
+    """Deterministic one-glance pipeline snapshot from the DB (no LLM, no invented
+    numbers). Answers "where am I with applying?" — Josh's recurring question."""
+    with cursor(db_path) as cur:
+        rows = cur.execute(
+            "SELECT tier, needs_enrichment FROM opportunities").fetchall()
+        frozen = cur.execute("SELECT COUNT(*) c FROM company_freeze").fetchone()["c"]
+    if not rows:
+        return ("No applications tracked yet. Forward a confirmation to your intake "
+                "email, or drop a Simplify export in this channel, and I'll start "
+                "building the pipeline.")
+    total = len(rows)
+    held = sum(1 for r in rows if r["needs_enrichment"])
+    surfaced = [r for r in rows if not r["needs_enrichment"]]
+    a = sum(1 for r in surfaced if r["tier"] == "A")
+    b = sum(1 for r in surfaced if r["tier"] == "B")
+    c = sum(1 for r in surfaced if r["tier"] == "C")
+    noun = "opportunity" if total == 1 else "opportunities"
+    return (
+        f"*Your pipeline — {total} {noun} tracked:*\n"
+        f"• Scored & surfaced: {len(surfaced)}  (Tier A {a}, B {b}, C {c})\n"
+        f"• Held for enrichment (need comp/industry): {held}\n"
+        f"• Companies frozen — you replied, follow-ups stopped: {frozen}\n"
+        f"_Ask `status Acme` for one company, or `call list` for today's outreach._"
+    )
 
 
 def _company_status(db_path: str, company: str) -> str:

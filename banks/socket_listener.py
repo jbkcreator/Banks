@@ -355,6 +355,10 @@ def run(cfg: BanksConfig | None = None) -> None:
     def _on(client: SocketModeClient, req: SocketModeRequest) -> None:
         # Ack first (Slack requires a prompt ack), then act.
         client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
+        import os as _os
+        if _os.environ.get("BANKS_LISTENER_DEBUG"):
+            _et = (req.payload.get("event") or {}).get("type") if isinstance(req.payload, dict) else None
+            print(f"[listener] recv type={req.type} event={_et}", flush=True)
 
         if req.type == "events_api":
             event = (req.payload.get("event") or {})

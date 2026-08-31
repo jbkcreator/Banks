@@ -154,3 +154,23 @@ class TestUnrecognisedFallback:
     def test_random_miss_is_one_line_nudge(self, db_path):
         reply = fallback_reply("asdfqwer")
         assert "not sure" in reply.lower()
+
+
+class TestPipelineSnapshot:
+    def test_where_am_i_routes_to_pipeline(self, db_path):
+        assert route(db_path, "where am I with applying?").intent == "pipeline"
+        assert route(db_path, "give me an update on my applications").intent == "pipeline"
+
+    def test_pipeline_empty(self, db_path):
+        reply = handle_command(db_path, Command("pipeline"))
+        assert "No applications tracked yet" in reply
+
+    def test_pipeline_counts(self, db_path):
+        record_opportunity(db_path, "VP Sales", "x", 90, tier="A",
+                           company_normalized="acme", needs_enrichment=0)
+        record_opportunity(db_path, "AE", "x", 55, tier="B",
+                           company_normalized="beta", needs_enrichment=1)
+        reply = handle_command(db_path, Command("pipeline"))
+        assert "2 opportunities tracked" in reply
+        assert "Tier A 1" in reply
+        assert "Held for enrichment" in reply
