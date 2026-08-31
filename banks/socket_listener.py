@@ -79,7 +79,11 @@ def _handle_action(cfg: BanksConfig, web, payload: dict, llm=None, chat=None) ->
 
     # Single-approver lock: ignore clicks from anyone but Josh (Q13).
     if not is_authorized(cfg, user_id):
+        print(f"[listener] IGNORED click action={action_id!r} from user={user_id!r} "
+              f"(approver={cfg.approver_user_id!r}) — not the approver", flush=True)
         return
+    print(f"[listener] click action={action_id!r} draft_ref={draft_ref!r} "
+          f"by user={user_id!r}", flush=True)
 
     # Queue-only actions (Q3/Q4): Skip / Snooze / Mark-done live in queue_actions,
     # not approval.ButtonAction. Handle them before the ButtonAction parse.
@@ -112,6 +116,8 @@ def _handle_action(cfg: BanksConfig, web, payload: dict, llm=None, chat=None) ->
     # by propose(). Approve on an email:* intent enqueues Relay; none:internal
     # just acknowledges.
     result = apply_action(cfg.db_path, button, draft_ref, user_id)
+    print(f"[listener] {button.value} applied draft_ref={draft_ref!r} "
+          f"enqueue_send={getattr(result, 'enqueue_send', None)}", flush=True)
 
     if button is ButtonAction.APPROVE:
         _maybe_generate_surround_pack(cfg, draft_ref, chat, llm)

@@ -74,6 +74,9 @@ def run_job(name: str, db_path: str, chat: ChatPort) -> dict | None:
         except RuntimeError:
             return None  # no mailer configured yet; retry on the next tick
         if result.sent:
+            print(f"[relay] dispatched {len(result.sent)} send(s): "
+                  f"{result.sent} (blocked={result.blocked} failed={result.failed})",
+                  flush=True)
             log_event(db_path, "draft_created", meta={"job": "relay_dispatch",
                       "sent": len(result.sent)}, minutes_saved=0)
         return {"sent": result.sent, "skipped": result.skipped,
