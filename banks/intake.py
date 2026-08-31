@@ -254,11 +254,31 @@ def ingest_email_confirmations(
             needs_enrichment=1,  # always held — no JD details in a confirmation
         )
         print(f"[intake] ingested: company={company!r} tier={tier} fit={fit}")
+        # Visible receipt (2026-08-31): a confirmation is held, not surfaced as a
+        # Tier-B card (Decision 4), so without this the intake is invisible in
+        # Slack. One line proves the pipe caught it, without flooding the channel.
+        _post_intake_receipt(chat, company)
         ingested += 1
 
     elapsed = round(time.monotonic() - t0, 1)
     print(f"[intake] done — ingested={ingested} skipped={skipped} elapsed={elapsed}s")
     return ingested, skipped
+
+
+def _post_intake_receipt(chat: "ChatPort", company: str) -> None:
+    """One-line Slack receipt that a forwarded confirmation was logged. Held for
+    enrichment (no Tier-B card), so this is the only visible sign intake worked.
+    A Slack failure must never sink the intake — swallow it."""
+    if chat is None:
+        return
+    label = "an application" if company.startswith("Unknown") else f"application to {company}"
+    text = f":inbox_tray: Logged {label} — held for enrichment (surfaces once comp/industry fill)."
+    try:
+        chat.post_blocks(text, [
+            {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+        ])
+    except Exception as exc:  # visibility is a bonus, never a failure mode
+        print(f"[intake] receipt post failed (continuing): {type(exc).__name__}: {exc}")
 
 
 def export_enrichment_queue(db_path: str, out_path: str) -> int:

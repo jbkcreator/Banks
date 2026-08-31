@@ -133,6 +133,31 @@ class TestEmailIntake:
         assert is_confirmation_email("Thank you for applying to Buildium")
         assert not is_confirmation_email("Weekly newsletter from LinkedIn")
 
+    def test_rejection_not_a_confirmation(self):
+        assert not is_confirmation_email(
+            "Update on your application to Acme",
+            "Unfortunately we've decided not to move forward.")
+        assert not is_confirmation_email("Your application to Acme — next steps")
+        assert not is_confirmation_email(
+            "Re: your application", "We'd like to schedule your interview.")
+
+    def test_intake_skips_rejection(self, db_path):
+        port = FakeEmailPort([
+            {"subject": "Update on your application to Acme",
+             "body": "Unfortunately, we are not moving forward.", "from": "", "date": ""},
+        ])
+        ingested, skipped = ingest_email_confirmations(db_path, port, FakeChatPort())
+        assert (ingested, skipped) == (0, 1)
+
+    def test_intake_posts_receipt(self, db_path):
+        chat = FakeChatPort()
+        port = FakeEmailPort([
+            {"subject": "Your application to Northspyre was received",
+             "body": "", "from": "", "date": ""},
+        ])
+        ingest_email_confirmations(db_path, port, chat)
+        assert any("Northspyre" in p["text"] for p in chat.posts)
+
     def test_fake_port_returns_messages(self):
         port = FakeEmailPort([{"subject": "Application received — Acme", "body": ""}])
         msgs = port.get_confirmations()

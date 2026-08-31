@@ -106,11 +106,24 @@ _CONFIRMATION_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+# A rejection or an interview/advance email also contains "application", but it
+# is NOT a new-application confirmation — recording it as a fresh opportunity is
+# noise (and a rejection could wrongly re-open a dead company). If any of these
+# fire, it isn't intake's to record.
+_NOT_CONFIRMATION = re.compile(
+    r"unfortunately|not moving forward|will not be moving|decided (?:not |to )"
+    r"|regret|no longer under consideration|position has been filled"
+    r"|other candidates|schedule (?:your |a )?(?:call|interview)"
+    r"|next steps|move forward with your|invite you to interview",
+    re.IGNORECASE,
+)
+
 
 def is_confirmation_email(subject: str, body: str = "") -> bool:
-    return bool(
-        _CONFIRMATION_KEYWORDS.search(subject) or _CONFIRMATION_KEYWORDS.search(body)
-    )
+    blob = f"{subject}\n{body}"
+    if _NOT_CONFIRMATION.search(blob):
+        return False  # rejection / interview-invite / advance — not a new app
+    return bool(_CONFIRMATION_KEYWORDS.search(blob))
 
 
 _STOP = r"(?=\s+(?:has been|was\b|is\b|received|for\b|–|\|)|\s+-\s|\s*$)"
