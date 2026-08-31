@@ -19,6 +19,7 @@ from __future__ import annotations
 import email
 import imaplib
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 
@@ -56,7 +57,8 @@ class LiveImapEmailPort:
             with imaplib.IMAP4_SSL(self.IMAP_HOST) as conn:
                 conn.login(self._email, self._password)
                 conn.select("INBOX")
-                _, data = conn.search(None, "UNSEEN")
+                since = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%d-%b-%Y")
+                _, data = conn.search(None, f'(UNSEEN SINCE "{since}")')
                 uids = data[0].split()
                 for uid in uids:
                     _, msg_data = conn.fetch(uid, "(RFC822)")
@@ -73,8 +75,8 @@ class LiveImapEmailPort:
                             "from": from_addr,
                             "date": date,
                         })
-                    # Mark read regardless — non-confirmation forwards stay clean
-                    conn.store(uid, "+FLAGS", "\\Seen")
+                        # Only mark read if it's a confirmation — leave other mail untouched
+                        conn.store(uid, "+FLAGS", "\\Seen")
         except (imaplib.IMAP4.error, OSError):
             pass  # network/auth failure → return empty, scheduler retries next poll
         return messages

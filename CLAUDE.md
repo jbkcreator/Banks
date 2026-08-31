@@ -63,7 +63,7 @@ approval. No autonomous sends, no standing orders.
 
 | Module | Scope | Status |
 |---|---|---|
-| MOD-01 | Application intake, dedup, fit scoring, tiering | **Build-complete, e2e-tested, live. Forwarded email listener built (LiveImapEmailPort + scheduler job email_intake_poll every 10 min). Needs BANKS_INTAKE_EMAIL + BANKS_INTAKE_EMAIL_PASSWORD in .env.** |
+| MOD-01 | Application intake, dedup, fit scoring, tiering | **Build-complete, e2e-tested, live. Forwarded email listener built (LiveImapEmailPort + scheduler job email_intake_poll every 10 min). BANKS_INTAKE_EMAIL=jbkantor@gmail.com + BANKS_INTAKE_EMAIL_PASSWORD set in .env. E2E verified 2026-08-31 (ingested=1).** |
 | MOD-02 | Contact resolution, enrichment, warm-path graph | **Build-complete, e2e-tested; Clay enrichment needs paid plan** |
 | MOD-03 | 7 distribution lanes & surround workflow | **Build-complete, code-reviewed. LinkedIn DM deep-link handoff wired into linkedin + employee lanes. 490 tests green.** |
 | MOD-04 | Follow-up cadence, governance, collision ledger | **Build-complete, code-reviewed, 460 tests green** |
@@ -190,9 +190,8 @@ approval. No autonomous sends, no standing orders.
 - **Full exclusion list** — only "Rent Solutions" seeded in `exclusions.txt`.
 - **Paid Clay / Hunter.io** — for hands-off contact enrichment. Manual CSV
   (`ManualCSVEnrichmentPort`) is $0 interim.
-- **Josh's Gmail app password (outbound)** — for live email send via `SmtpMailer`.
-- **banks-intake@gmail.com app password** — for `LiveImapEmailPort` (email intake).
-  Set `BANKS_INTAKE_EMAIL` + `BANKS_INTAKE_EMAIL_PASSWORD` in `.env`.
+- ~~**Josh's Gmail app password (outbound)**~~ — ✅ Set 2026-08-31. `BANKS_SMTP_PASSWORD` in `.env`. SMTP login verified live.
+- ~~**banks-intake@gmail.com app password**~~ — ✅ Set 2026-08-31. Using `jbkantor@gmail.com` for intake. `BANKS_INTAKE_EMAIL` + `BANKS_INTAKE_EMAIL_PASSWORD` in `.env`. E2E verified (ingested=1). Note: only confirmation emails marked read; other inbox mail untouched.
 - **LoopCV export** — `parse_loopcv_row` is built but dormant; needs Josh's real
   export file to confirm column names.
 
