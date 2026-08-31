@@ -7,7 +7,8 @@ import tempfile
 
 import pytest
 
-from banks.commands import Command, RateLimiter, handle_command, route
+from banks.commands import (Command, RateLimiter, fallback_reply,
+                            handle_command, route)
 from banks.llmport import FakeLLMPort
 from banks.opportunity import record_opportunity
 from banks.store import cursor, init_db
@@ -123,3 +124,33 @@ def test_rate_limiter_per_user():
     assert rl.allow("U1", now=100.0)
     assert rl.allow("U2", now=100.0)                 # different user, own budget
     assert rl.allow("U1", now=100.0) is False
+
+
+class TestUnrecognisedFallback:
+    """An unrecognised message must NOT dump the same menu every time; it should
+    answer honestly (esp. capability questions Banks can't do)."""
+
+    def test_linkedin_question_gets_honest_hardwall_reply(self, db_path):
+        cmd = route(db_path, "Can you see LinkedIn?")
+        assert cmd.intent == "none"
+        reply = handle_command(db_path, cmd)
+        assert "hard wall" in reply.lower()
+        assert "can't" in reply.lower() or "cannot" in reply.lower()
+
+    def test_look_through_gmail_gets_hardwall_reply(self, db_path):
+        reply = handle_command(db_path, route(db_path,
+            "Can you look through my slack, LinkedIn and Gmail?"))
+        assert "hard wall" in reply.lower()
+
+    def test_explicit_help_shows_menu(self, db_path):
+        reply = handle_command(db_path, route(db_path, "help"))
+        assert "who do I know at" in reply and "call list" in reply
+
+    def test_greeting_is_short_not_menu(self, db_path):
+        reply = fallback_reply("Good morning banks")
+        assert "who do I know at" not in reply
+        assert "help" in reply.lower()
+
+    def test_random_miss_is_one_line_nudge(self, db_path):
+        reply = fallback_reply("asdfqwer")
+        assert "not sure" in reply.lower()

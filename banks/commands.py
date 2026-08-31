@@ -43,6 +43,43 @@ _HELP = (
 class Command:
     intent: str            # whoat | status | calllist | replied | none
     company: str | None = None
+    raw: str = ""          # original text, so the `none` fallback can be context-aware
+
+
+# Things Josh may expect a general chat-bot to do that Banks deliberately cannot —
+# reading his live inbox or browsing LinkedIn would breach the hard wall. When he
+# asks, answer honestly instead of dumping the command menu at him.
+_CANT_DO = re.compile(
+    r"\b(linkedin|gmail|inbox|e-?mail|browse|scrape|log ?in|read my|see my|"
+    r"look (?:through|at) my|check my|go through my)\b", re.IGNORECASE,
+)
+_GREETING = re.compile(r"^\s*(hi|hey|hello|yo|good\s+(morning|afternoon|evening)|gm)\b",
+                       re.IGNORECASE)
+_ASKED_HELP = re.compile(r"\b(help|what can you|what do you|commands?|options?)\b",
+                         re.IGNORECASE)
+
+_CANT_DO_REPLY = (
+    "I can't read your inbox or browse LinkedIn/Gmail — that's the hard wall by "
+    "design (I only see application confirmations you *forward* me, never your live "
+    "accounts). What I *can* do:\n" + _HELP.split(":\n", 1)[1]
+)
+
+
+def fallback_reply(text: str) -> str:
+    """Context-aware reply for an unrecognised message — never the blind menu.
+
+    Capability question -> honest 'I can't (hard wall)'. Greeting -> short hello.
+    Explicit help ask -> the full menu. Anything else -> a one-line nudge.
+    """
+    t = text or ""
+    if _CANT_DO.search(t):
+        return _CANT_DO_REPLY
+    if _ASKED_HELP.search(t):
+        return _HELP
+    if _GREETING.search(t):
+        return "Morning. I'm your job-search command surface — say `help` to see what I do."
+    return ("Not sure what you mean. I handle: `who do I know at <company>`, "
+            "`status <company>`, `call list`, `replied <company>`. Say `help` for more.")
 
 
 def route(db_path: str, text: str, llm=None) -> Command:
@@ -79,7 +116,7 @@ def route(db_path: str, text: str, llm=None) -> Command:
         except Exception:
             pass
 
-    return Command("none")
+    return Command("none", raw=t)
 
 
 def handle_command(db_path: str, cmd: Command) -> str:
@@ -118,7 +155,7 @@ def handle_command(db_path: str, cmd: Command) -> str:
                 f"stopped ({n} opportunit{'y' if n == 1 else 'ies'}). No one who replied "
                 f"will be chased.")
 
-    return _HELP
+    return fallback_reply(cmd.raw)
 
 
 def _company_status(db_path: str, company: str) -> str:
