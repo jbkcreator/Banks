@@ -60,6 +60,7 @@ class LiveImapEmailPort:
                 since = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%d-%b-%Y")
                 _, data = conn.search(None, f'(UNSEEN SINCE "{since}")')
                 uids = data[0].split()
+                print(f"[intake] poll start — {len(uids)} unread in last 24h")
                 for uid in uids:
                     _, msg_data = conn.fetch(uid, "(RFC822)")
                     raw = msg_data[0][1]
@@ -69,6 +70,7 @@ class LiveImapEmailPort:
                     date = msg.get("Date", "")
                     body = _extract_body(msg)
                     if is_confirmation_email(subject, body):
+                        print(f"[intake] confirmation: subject={subject!r} from={from_addr!r}")
                         messages.append({
                             "subject": subject,
                             "body": body,
@@ -77,8 +79,10 @@ class LiveImapEmailPort:
                         })
                         # Only mark read if it's a confirmation — leave other mail untouched
                         conn.store(uid, "+FLAGS", "\\Seen")
-        except (imaplib.IMAP4.error, OSError):
-            pass  # network/auth failure → return empty, scheduler retries next poll
+                    else:
+                        print(f"[intake] skip (not confirmation): subject={subject!r}")
+        except (imaplib.IMAP4.error, OSError) as e:
+            print(f"[intake] ERROR — IMAP auth/network failure: {e}")
         return messages
 
 

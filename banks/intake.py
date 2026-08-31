@@ -213,6 +213,8 @@ def ingest_email_confirmations(
     """
     from .emailport import extract_company_from_subject, is_confirmation_email
 
+    import time
+    t0 = time.monotonic()
     messages = email_port.get_confirmations()
     ingested = skipped = 0
 
@@ -227,10 +229,12 @@ def ingest_email_confirmations(
         title = "(from forwarded confirmation)"
 
         if is_target_excluded(db_path, company=company)[0]:
+            print(f"[intake] excluded: company={company!r}")
             skipped += 1
             continue
 
         if find_duplicate(db_path, None, title, company) is not None:
+            print(f"[intake] duplicate: company={company!r} — skipped")
             skipped += 1
             continue
 
@@ -244,8 +248,11 @@ def ingest_email_confirmations(
             company_normalized=normalise_company(company),
             needs_enrichment=1,  # always held — no JD details in a confirmation
         )
+        print(f"[intake] ingested: company={company!r} tier={tier} fit={fit}")
         ingested += 1
 
+    elapsed = round(time.monotonic() - t0, 1)
+    print(f"[intake] done — ingested={ingested} skipped={skipped} elapsed={elapsed}s")
     return ingested, skipped
 
 
