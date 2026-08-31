@@ -21,7 +21,7 @@ if env_file.exists():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.split("#")[0].strip())
+            os.environ[k.strip()] = v.split("#")[0].strip()
 
 from banks.config import load_config
 from banks.contact_enrichment import (
