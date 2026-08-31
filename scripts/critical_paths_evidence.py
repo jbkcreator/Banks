@@ -251,22 +251,65 @@ def path4_email_intake(log: Log, db_path: str, live: bool) -> None:
                 f"ingested={ingested}")
 
 
+def load_env_file(path: Path) -> int:
+    """Load KEY=VALUE lines from a .env into os.environ WITHOUT a shell.
+
+    A bare `python scripts/...` run (unlike systemd) doesn't get the .env, and
+    `. .env` breaks on any value with an unquoted space. This parses it safely:
+    skip blanks/#comments, split on the FIRST '=', strip matching surrounding
+    quotes, and keep everything else verbatim (spaces, $, : and all).
+    """
+    import os
+    if not path.exists():
+        return 0
+    loaded = 0
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export "):].strip()
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        os.environ[key] = val
+        loaded += 1
+    return loaded
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Banks 5 critical-paths evidence run.")
     ap.add_argument("--to", default="heusolutions@gmail.com",
                     help="recipient for the REAL send test (an address you own)")
     ap.add_argument("--live-intake", action="store_true",
                     help="use the live IMAP inbox instead of a fake confirmation")
+    ap.add_argument("--envfile", default=str(REPO / ".env"),
+                    help="path to the .env to load into the environment first")
     args = ap.parse_args(argv)
+
+    n = load_env_file(Path(args.envfile))
+    print(f"loaded {n} vars from {args.envfile}")
 
     reports = REPO / "docs" / "reports"
     reports.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     log = Log(reports / f"critical_paths_{stamp}.log")
 
-    log.line("BANKS — 5 CRITICAL PATHS EVIDENCE RUN")
+    log.line("BANKS - 5 CRITICAL PATHS EVIDENCE RUN")
     log.line(f"when: {datetime.now(timezone.utc).isoformat()}")
     log.line(f"send recipient: {args.to}")
+    from banks.config import load_config
+    cfg = load_config()
+
+    def _seen(v):  # masked presence check, never prints the secret
+        return f"{str(v)[:3]}... (set)" if v else "MISSING"
+    log.line(f"env: SMTP_HOST={_seen(cfg.smtp_host)} SMTP_USER={_seen(cfg.smtp_user)} "
+             f"SMTP_PASSWORD={_seen(cfg.smtp_password)} SMTP_FROM={_seen(cfg.smtp_from)}")
+    log.line(f"env: RESEND_KEY={_seen(cfg.resend_api_key)} "
+             f"INTAKE_EMAIL={_seen(cfg.intake_email)} "
+             f"INTAKE_PASSWORD={_seen(cfg.intake_email_password)}")
     log.line("=" * 64)
 
     # Throwaway DB — never touch production banks.db.
