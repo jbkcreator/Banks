@@ -6,7 +6,8 @@ import tempfile
 
 import pytest
 
-from banks.emailport import FakeEmailPort, LiveImapEmailPort, is_confirmation_email
+from banks.emailport import (FakeEmailPort, LiveImapEmailPort, extract_company,
+                             extract_company_from_subject, is_confirmation_email)
 from banks.lanes import _linkedin_action_line, draft_linkedin_lane, draft_employee_lane
 from banks.opportunity import CareerFacts
 from banks.intake import ingest_email_confirmations
@@ -84,6 +85,47 @@ class TestLinkedInHandoff:
 # ---------------------------------------------------------------------------
 # Gap 3 — forwarded email confirmation listener
 # ---------------------------------------------------------------------------
+
+class TestCompanyExtraction:
+    """extract_company: subject -> forwarded body headers -> body text -> sender
+    domain, so a real forwarded confirmation resolves even when the subject
+    names no company."""
+
+    def test_subject_wins_when_present(self):
+        assert extract_company("Thank you for applying to Acme") == "Acme"
+
+    def test_subjectless_falls_to_forwarded_subject_header(self):
+        # Josh forwards: envelope subject is generic, real subject is in the body.
+        body = ("---------- Forwarded message ---------\n"
+                "From: Careers <careers@acme.com>\n"
+                "Subject: Your application to Northspyre was received\n\n"
+                "Thanks for applying.")
+        assert extract_company("Fwd: (no subject)", body) == "Northspyre"
+
+    def test_forwarded_from_domain_used_when_no_phrasing(self):
+        body = ("---------- Forwarded message ---------\n"
+                "From: EliseAI Talent <no-reply@eliseai.com>\n"
+                "Subject: We received your application\n\n"
+                "Your application is in review.")
+        assert extract_company("Fwd: application", body) == "Eliseai"
+
+    def test_ats_domain_is_not_treated_as_company(self):
+        # greenhouse/lever/etc name the ATS, not the employer -> skip, fall through.
+        body = ("From: no-reply@greenhouse.io\n"
+                "Subject: Application received\n")
+        assert extract_company("Fwd: application received", body) == ""
+
+    def test_sender_domain_when_direct_not_forwarded(self):
+        assert extract_company("Application received", "",
+                               "jobs@northspyre.com") == "Northspyre"
+
+    def test_gmail_sender_is_generic(self):
+        assert extract_company("Application received", "",
+                               "jbkantor@gmail.com") == ""
+
+    def test_subject_extractor_unchanged(self):
+        assert extract_company_from_subject("applied to Bay Street") == "Bay Street"
+
 
 class TestEmailIntake:
     def test_confirmation_email_detected(self):

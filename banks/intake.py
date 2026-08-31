@@ -211,7 +211,7 @@ def ingest_email_confirmations(
     scheduler job 'email_intake_poll'. Josh forwards; Banks only sees what
     he sends (no full inbox access).
     """
-    from .emailport import extract_company_from_subject, is_confirmation_email
+    from .emailport import extract_company, is_confirmation_email
 
     import time
     t0 = time.monotonic()
@@ -225,7 +225,7 @@ def ingest_email_confirmations(
             skipped += 1
             continue
 
-        company = extract_company_from_subject(subject) or "Unknown (forwarded email)"
+        company = extract_company(subject, body, msg.get("from", "")) or "Unknown (forwarded email)"
         title = "(from forwarded confirmation)"
 
         if is_target_excluded(db_path, company=company)[0]:

@@ -113,20 +113,98 @@ def is_confirmation_email(subject: str, body: str = "") -> bool:
     )
 
 
-def extract_company_from_subject(subject: str) -> str:
-    """Best-effort company name extraction from confirmation subject line."""
-    # Stop at verb phrases, " - ", or end of string (space optional before EOL)
-    _STOP = r"(?=\s+(?:has been|was\b|is\b|received|for\b|–|\|)|\s+-\s|\s*$)"
-    _NAME = r"([A-Za-z0-9][A-Za-z0-9 &,.\-]*?)"
-    patterns = [
-        r"application (?:to|at|for) " + _NAME + _STOP,
-        r"applied (?:to|at|for) " + _NAME + _STOP,
-        r"submitted to " + _NAME + _STOP,
-        r"applying to " + _NAME + _STOP,
-        r"(?:at|to) " + _NAME + _STOP,
-    ]
-    for pattern in patterns:
-        m = re.search(pattern, subject, re.IGNORECASE)
+_STOP = r"(?=\s+(?:has been|was\b|is\b|received|for\b|–|\|)|\s+-\s|\s*$)"
+_NAME = r"([A-Za-z0-9][A-Za-z0-9 &,.\-]*?)"
+_NAME_PATTERNS = [
+    r"application (?:to|at|for) " + _NAME + _STOP,
+    r"applied (?:to|at|for) " + _NAME + _STOP,
+    r"submitted to " + _NAME + _STOP,
+    r"applying to " + _NAME + _STOP,
+    r"(?:at|to) " + _NAME + _STOP,
+]
+
+# Domains that identify the applicant-tracking system / mail host, NOT the
+# hiring company — so a sender/forwarded-From on one of these tells us nothing
+# about who the role is with. Skip them and fall through.
+_GENERIC_DOMAINS = frozenset({
+    "greenhouse.io", "lever.co", "ashbyhq.com", "myworkday.com", "workday.com",
+    "icims.com", "smartrecruiters.com", "workable.com", "jobvite.com",
+    "successfactors.com", "taleo.net", "bamboohr.com", "breezy.hr", "gem.com",
+    "linkedin.com", "indeed.com", "ziprecruiter.com", "glassdoor.com",
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "yahoo.com",
+    "icloud.com", "protonmail.com", "amazonses.com", "sendgrid.net",
+    "mailgun.org", "notifications.com", "noreply.com",
+})
+_DOMAIN_RE = re.compile(r"[\w.\-]+@([\w\-]+(?:\.[\w\-]+)+)")
+
+
+def _company_from_domain(addr: str) -> str:
+    """Turn a sender/forwarded-From address into a company name, or '' if the
+    domain is a generic ATS/mail host (which names no company)."""
+    m = _DOMAIN_RE.search(addr or "")
+    if not m:
+        return ""
+    domain = m.group(1).lower().strip(".")
+    # registrable-ish domain: drop leading subdomains (careers., jobs., no-reply.)
+    parts = domain.split(".")
+    if len(parts) >= 2:
+        domain = ".".join(parts[-2:])
+    if domain in _GENERIC_DOMAINS:
+        return ""
+    label = domain.split(".")[0]
+    if not label or label in ("mail", "email", "no-reply", "noreply", "notifications"):
+        return ""
+    return label.replace("-", " ").title()
+
+
+def _match_name(text: str) -> str:
+    for pattern in _NAME_PATTERNS:
+        m = re.search(pattern, text, re.IGNORECASE)
         if m:
             return m.group(1).strip()
     return ""
+
+
+def extract_company_from_subject(subject: str) -> str:
+    """Best-effort company name extraction from a confirmation subject line."""
+    return _match_name(subject or "")
+
+
+# A forwarded confirmation carries the original headers inside the body, e.g.
+#   From: Acme Careers <careers@acme.com>
+_FWD_FROM_RE = re.compile(r"^\s*From:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+_FWD_SUBJECT_RE = re.compile(r"^\s*Subject:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+
+
+def extract_company(subject: str, body: str = "", from_addr: str = "") -> str:
+    """Company name from a confirmation, trying the most reliable source first.
+
+    1. subject line phrasing ("...applying to Acme")
+    2. the forwarded original Subject/From inside the body (Josh forwards, so the
+       real sender + original subject live in the body, not the envelope)
+    3. body phrasing anywhere
+    4. sender domain (direct-to-intake case; skipped for ATS/mail hosts)
+    Returns '' only when none of these yield a name — caller then holds it as
+    Unknown rather than inventing one.
+    """
+    name = extract_company_from_subject(subject)
+    if name:
+        return name
+
+    body = body or ""
+    # 2a. forwarded original Subject line -> same phrasing patterns
+    for m in _FWD_SUBJECT_RE.finditer(body):
+        got = _match_name(m.group(1))
+        if got:
+            return got
+    # 2b. forwarded original From line -> its domain
+    for m in _FWD_FROM_RE.finditer(body):
+        got = _company_from_domain(m.group(1))
+        if got:
+            return got
+    # 3. any confirmation phrasing in the body text
+    got = _match_name(body)
+    if got:
+        return got
+    # 4. envelope sender domain (only useful when not forwarded)
+    return _company_from_domain(from_addr)
