@@ -144,10 +144,12 @@ def ingest_manual(
 
     pursuit_mode = classify_pursuit_mode(f"{title} {jd_text or ''}")
     role_type = classify_role_type(title, jd_text or "")
+    from .config import load_config
     from .targets import target_priority
     fit, tier, needs_enrichment = _score.score_role(
         comp_k=comp_k, industry=industry, location=location, pursuit_mode=pursuit_mode,
-        target_priority=target_priority(db_path, company), role_type=role_type)
+        target_priority=target_priority(db_path, company), role_type=role_type,
+        remote_only=load_config().remote_only_roles)
 
     opp_id = record_opportunity(
         db_path, title, "manual", fit,

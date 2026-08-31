@@ -59,15 +59,18 @@ def _score_row(parsed: dict, comp_k: float | None, vertical: str | None,
     """Return (fit_score, tier, pursuit_mode, needs_enrichment) — via score.score_role.
 
     target_priority (watchlist, item 6) applies a graded company bump; role_type
-    (item 7) screens the title so target roles lift and SDR/BDR/CS sink.
+    (item 7) screens the title; remote_only (2026-08-31) sinks hybrid/onsite roles
+    outside the home market.
     """
+    from .config import load_config
     title_blob = f"{parsed.get('title', '')} {parsed.get('job_type', '')}"
     pursuit_mode = classify_pursuit_mode(title_blob)
     role_type = classify_role_type(parsed.get("title", ""), parsed.get("description", ""))
     fit, tier, needs_enrichment = _score.score_role(
         comp_k=comp_k, industry=vertical,
         location=parsed.get("location", ""), pursuit_mode=pursuit_mode,
-        target_priority=target_priority, role_type=role_type)
+        target_priority=target_priority, role_type=role_type,
+        remote_only=load_config().remote_only_roles)
     return fit, tier, pursuit_mode, needs_enrichment
 
 

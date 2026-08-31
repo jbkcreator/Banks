@@ -87,6 +87,11 @@ class BanksConfig:
     # consulting only when a real role/conversation points that way. Flag kept so
     # it's a one-line flip if Josh later wants warm-company pitches, not a rebuild.
     proactive_consulting_enabled: bool = False
+    # Remote preference (client 2026-08-31: "can't do New York hybrid, just full
+    # remote"). When on, a hybrid/onsite role OUTSIDE the home market (Tampa/FL)
+    # gets a heavy fit penalty so it sinks to Tier C. Remote + home-market local
+    # are untouched. On by default per Josh's stated constraint; a config flip.
+    remote_only_roles: bool = True
 
     @property
     def slack_ready(self) -> bool:
@@ -123,4 +128,6 @@ def load_config() -> BanksConfig:
         intake_email_password=os.environ.get("BANKS_INTAKE_EMAIL_PASSWORD"),
         proactive_consulting_enabled=os.environ.get(
             "BANKS_PROACTIVE_CONSULTING", "").strip().lower() in ("1", "true", "yes"),
+        remote_only_roles=os.environ.get(
+            "BANKS_REMOTE_ONLY", "true").strip().lower() in ("1", "true", "yes"),
     )

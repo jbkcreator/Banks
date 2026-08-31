@@ -129,10 +129,33 @@ ROLE_ADJUST: dict[str, int] = {
 }
 
 
+# Remote preference (client 2026-08-31). A hybrid/onsite role OUTSIDE the home
+# market requires relocation Josh won't do → heavy penalty so it sinks to Tier C.
+REMOTE_RELOCATION_PENALTY = -30
+
+
+def requires_relocation(location: str | None, cfg: ScoringConfig = DEFAULT_SCORING) -> bool:
+    """True if the role can't be done remotely AND isn't in the home market.
+
+    remote (or remote-friendly) → False. Home market (geo_full: tampa/fl/…) →
+    False (he lives there). A hybrid/onsite location elsewhere → True. Empty/
+    unknown location → False (don't penalise what we can't read)."""
+    if not location or not location.strip():
+        return False
+    loc = location.lower()
+    if "remote" in loc:
+        return False
+    if any(kw in loc for kw in cfg.geo_full):  # home market — he can do it
+        return False
+    # a real location that is neither remote nor home = hybrid/onsite elsewhere
+    return True
+
+
 def score_role(comp_k, industry, location, pursuit_mode,
                cfg: ScoringConfig = DEFAULT_SCORING,
                target_priority: int | None = None,
-               role_type: str | None = None):
+               role_type: str | None = None,
+               remote_only: bool = False):
     """Score one role end to end. The single home for the fit→tier→hold decision
     (was copy-pasted across intake/manual_intake/enrich).
 
@@ -157,5 +180,7 @@ def score_role(comp_k, industry, location, pursuit_mode,
         fit = min(100, fit + TARGET_BONUS.get(target_priority, 0))
     if role_type is not None:
         fit = max(0, min(100, fit + ROLE_ADJUST.get(role_type, 0)))
+    if remote_only and requires_relocation(location, cfg):
+        fit = max(0, fit + REMOTE_RELOCATION_PENALTY)
     needs_enrichment = not (industry and str(industry).strip())
     return fit, assign_tier(fit, cfg), needs_enrichment
