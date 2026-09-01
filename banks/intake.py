@@ -203,7 +203,11 @@ _EMAIL_CONFIRM_SYSTEM = (
     "promotions, product/loan offers, rejections, interview invitations, one-time "
     "passcodes, and any unrelated mail are NOT application confirmations. "
     'Return JSON only: {{"confirmed": true or false, '
-    '"company": "<exact name copied from the list, or null>"}}.'
+    '"company": "<exact name copied from the list, or null>", '
+    '"summary": "<one sentence, max 20 words, STRICTLY from the email text — what '
+    'it actually says; if it only acknowledges receipt with no timeline or next '
+    'steps, say exactly that. Never guess or invent details. Empty string if not '
+    'confirmed.>"}}.'
 )
 
 
@@ -306,7 +310,8 @@ def ingest_email_confirmations(
         print(f"[intake] confirmed application: company={company!r} opp={opp_id}")
         _post_intake_receipt(chat, company, role=(det["title"] if det else "") or "",
                              source_url=(det["source_url"] if det else None),
-                             message_id=msg.get("message_id"))
+                             message_id=msg.get("message_id"),
+                             summary=(data.get("summary") or "").strip())
         confirmed += 1
 
     print(f"[intake] done — confirmed={confirmed} skipped={skipped}")
@@ -336,10 +341,12 @@ def _posting_link(source_url: str | None, role: str, company: str) -> str:
 
 def _post_intake_receipt(chat: "ChatPort", company: str, role: str = "",
                          source_url: str | None = None,
-                         message_id: str | None = None) -> None:
+                         message_id: str | None = None,
+                         summary: str = "") -> None:
     """Clear, actionable Slack receipt when an application is confirmed: which
-    company + role, a link back to the posting, a link to the confirmation email,
-    and the two useful next moves. A Slack failure must never sink the intake."""
+    company + role, a one-line summary of what the email actually said, a link
+    back to the posting, a link to the confirmation email, and the two useful next
+    moves. A Slack failure must never sink the intake."""
     if chat is None:
         return
     display = company.title() if company and company.islower() else company
@@ -347,18 +354,27 @@ def _post_intake_receipt(chat: "ChatPort", company: str, role: str = "",
              f"your application."]
     if role:
         lines.append(f"*Role:* {role}")
-    refs = [f"<{_posting_link(source_url, role, display)}|View the job posting>"]
-    gm = _gmail_link(message_id)
-    if gm:
-        refs.append(f"<{gm}|View the confirmation email>")
-    lines.append("*Links:* " + "  ·  ".join(refs))
+    # Summary is additive — omit the line entirely when the LLM gave nothing
+    # (empty response, LLM-down, or old confirm-only payloads).
+    if summary:
+        lines.append(f"*Summary:* {summary}")
+    # The confirmation-email deep-link was removed — the *Summary:* line now tells
+    # Josh what the email says, so a link back to it is redundant (message_id is
+    # still captured upstream in case we resurface it later).
     lines.append(
-        f"*What next?* Ask `@banks who do I know at {display}` to find a warm "
-        f"intro, or `@banks status {display}` to check where it stands.")
-    text = "\n".join(lines)
+        f"*Link:* <{_posting_link(source_url, role, display)}|View the job posting>")
+    # The "What next?" nudge goes in a CONTEXT block — Slack renders context text
+    # smaller + muted than a section, so it reads as a subtle footer, not a
+    # competing line. Italic markdown keeps the old look.
+    next_line = (
+        f"_What next? Ask @banks who do I know at {display} to find a warm "
+        f"intro, or @banks status {display} to check where it stands._")
+    text = "\n".join(lines) + "\n" + next_line
     try:
         chat.post_blocks(text, [
-            {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}},
+            {"type": "context", "elements": [
+                {"type": "mrkdwn", "text": next_line}]},
         ])
     except Exception as exc:  # visibility is a bonus, never a failure mode
         print(f"[intake] receipt post failed (continuing): {type(exc).__name__}: {exc}")

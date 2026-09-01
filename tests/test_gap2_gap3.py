@@ -280,8 +280,36 @@ class TestEmailIntake:
         text = chat.posts[0]["text"]
         assert "Enterprise AE" in text
         assert "boards.greenhouse.io/acme/jobs/9" in text        # posting link
-        assert "rfc822msgid:abc123" in text                       # gmail deep-link
+        assert "rfc822msgid" not in text                           # email link removed
+        assert "View the confirmation email" not in text
         assert "who do I know at Acme" in text                     # next-step nudge
+
+    def test_receipt_shows_summary_when_present(self, db_path):
+        # LLM returns a summary → receipt renders a *Summary:* line.
+        record_opportunity(db_path, "AE", "simplify", 60, tier="B",
+                           company_normalized="acme", status="sourced")
+        llm = FakeLLMPort({"acme": '{"confirmed": true, "company": "acme", '
+                           '"summary": "Acknowledged your application; will review."}'})
+        chat = FakeChatPort()
+        port = FakeEmailPort([
+            {"subject": "Your application to Acme was received", "body": "",
+             "from": "no-reply@acme.com", "date": ""}])
+        ingest_email_confirmations(db_path, port, chat, llm)
+        text = chat.posts[0]["text"]
+        assert "*Summary:*" in text
+        assert "Acknowledged your application; will review." in text
+
+    def test_receipt_omits_summary_when_absent(self, db_path):
+        # Old confirm-only payload (no summary key) → no *Summary:* line.
+        record_opportunity(db_path, "AE", "simplify", 60, tier="B",
+                           company_normalized="acme", status="sourced")
+        llm = FakeLLMPort({"acme": '{"confirmed": true, "company": "acme"}'})
+        chat = FakeChatPort()
+        port = FakeEmailPort([
+            {"subject": "Your application to Acme was received", "body": "",
+             "from": "no-reply@acme.com", "date": ""}])
+        ingest_email_confirmations(db_path, port, chat, llm)
+        assert "*Summary:*" not in chat.posts[0]["text"]
 
     def test_receipt_falls_back_to_linkedin_when_no_url(self, db_path):
         record_opportunity(db_path, "Head of Growth", "simplify", 60, tier="B",
