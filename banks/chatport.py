@@ -84,7 +84,11 @@ class LiveChatPort:
         channel = self.config.slack_channel_id
         if not channel:
             raise WrongChannel("No #banks channel configured; refusing to post.")
-        kwargs = {"channel": channel, "text": text, "blocks": blocks}
+        # Suppress link/media unfurling — receipts carry job-posting + Gmail
+        # links; Slack's auto-preview cards (esp. a generic "Gmail is email…"
+        # card) are noise that clutters the channel.
+        kwargs = {"channel": channel, "text": text, "blocks": blocks,
+                  "unfurl_links": False, "unfurl_media": False}
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
         resp = self._client().chat_postMessage(**kwargs)

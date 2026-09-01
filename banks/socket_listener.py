@@ -271,14 +271,11 @@ def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
             web.chat_postMessage(channel=channel, text=msg)
         return
 
-    if verdict == "command":  # on-demand retrieval
-        cmd = route(cfg.db_path, text, llm)
-        reply = handle_command(cfg.db_path, cmd)
-        _debug_log(f"msg from {user_id!r}: {text!r} -> intent={cmd.intent!r} "
-                   f"reply={reply!r}")
-        if channel and reply:
-            web.chat_postMessage(channel=channel, text=reply)
-    # verdict == "ignore" → do nothing
+    # verdict == "command" or "ignore" → do nothing.
+    # Untagged messages are silent by design: all Q&A/commands now require an
+    # @banks mention (routed via _handle_app_mention). Only the button-triggered
+    # revision flow (above) and the halt/unhalt safety fallback act untagged.
+    _debug_log(f"msg from {user_id!r}: {text!r} -> ignored (no @banks tag)")
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +299,31 @@ def should_ingest_file(cfg: BanksConfig, event: dict) -> bool:
     if not is_authorized(cfg, event.get("user", "")):
         return False
     if event.get("channel") != cfg.slack_jobs_channel_id:
+        return False
+    return True
+
+
+def _is_jd_file(f: dict) -> bool:
+    name = (f.get("name") or "").lower()
+    ft = f.get("filetype") or ""
+    return (ft == "pdf" or name.endswith(".pdf")
+            or ft == "docx" or name.endswith(".docx")
+            or ft == "txt" or name.endswith(".txt")
+            or _is_csv(f))
+
+
+def should_ingest_mention_file(cfg: BanksConfig, event: dict) -> bool:
+    """Gate for @banks-tagged file uploads (app_mention event).
+
+    Accepts CSV, PDF, docx, txt from an authorized user. No channel restriction
+    (Josh may @banks in any channel). Bot uploads are rejected.
+    """
+    if event.get("bot_id"):
+        return False
+    files = event.get("files") or []
+    if not files or not any(_is_jd_file(f) for f in files):
+        return False
+    if not is_authorized(cfg, event.get("user", "")):
         return False
     return True
 
@@ -359,11 +381,227 @@ def _handle_file(cfg: BanksConfig, web, chat, event: dict) -> None:
         )
 
 
+def _handle_mention_file(cfg: BanksConfig, web, chat, event: dict) -> None:
+    """Handle a file dropped in a @banks mention (app_mention event).
+
+    Accepts: CSV (→ ingest_simplify), PDF/docx/txt (→ docparse + manual_intake).
+    One receipt per file, multiple files in one drop are all processed.
+    """
+    import os
+    import tempfile
+
+    from .slackfiles import download
+
+    channel = event.get("channel")
+    thread_ts = event.get("thread_ts") or event.get("ts")
+    files = event.get("files") or []
+
+    for f in files:
+        if not _is_jd_file(f):
+            continue
+        name = f.get("name") or "upload"
+        url = f.get("url_private_download") or f.get("url_private")
+        if not url:
+            info = web.files_info(file=f.get("id"))
+            url = (info.get("file") or {}).get("url_private_download")
+        try:
+            data = download(url, cfg.slack_bot_token or "")
+        except Exception as exc:
+            if channel:
+                web.chat_postMessage(channel=channel, thread_ts=thread_ts,
+                                     text=f"⚠️ Couldn't download *{name}*: {exc}")
+            continue
+
+        if _is_csv(f):
+            # CSV → Simplify intake (same as legacy message path)
+            from .csvport import LiveCSVPort
+            from .intake import ingest_simplify
+            tmp = os.path.join(tempfile.mkdtemp(), name)
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+            try:
+                res = ingest_simplify(cfg.db_path, LiveCSVPort(), tmp, chat)
+            except Exception as exc:
+                if channel:
+                    web.chat_postMessage(
+                        channel=channel, thread_ts=thread_ts,
+                        text=f"⚠️ Couldn't import *{name}*: {exc}",
+                    )
+                continue
+            total = res.ingested + res.duplicates + res.excluded
+            if channel:
+                web.chat_postMessage(
+                    channel=channel, thread_ts=thread_ts,
+                    text=(f"📥 Imported *{name}* — {total} rows: {res.ingested} new, "
+                          f"{res.duplicates} duplicates, {res.excluded} excluded. "
+                          f"{res.held} held for enrichment."),
+                )
+        else:
+            # PDF / docx / txt → docparse + manual_intake
+            from .docparse import TooLittleText, extract_text
+            from .llmport import load_llm_port
+            from .manual_intake import ingest_manual
+            try:
+                text = extract_text(data, name)
+            except TooLittleText as exc:
+                if channel:
+                    web.chat_postMessage(
+                        channel=channel, thread_ts=thread_ts,
+                        text=(f"📄 *{name}* looks like a scanned image — I couldn't "
+                              f"extract text from it. ({exc}) Please paste the JD text "
+                              f"directly instead."),
+                    )
+                continue
+            except ValueError as exc:
+                if channel:
+                    web.chat_postMessage(
+                        channel=channel, thread_ts=thread_ts,
+                        text=f"⚠️ Unsupported file type — {exc}. Use .pdf, .docx, or .txt.",
+                    )
+                continue
+            try:
+                result = ingest_manual(cfg.db_path, chat, jd_text=text,
+                                       llm=load_llm_port())
+                if channel:
+                    web.chat_postMessage(
+                        channel=channel, thread_ts=thread_ts,
+                        text=(f"📄 Processed *{name}* — "
+                              f"{'added to pipeline' if result else 'held for enrichment'}."),
+                    )
+            except Exception as exc:
+                if channel:
+                    web.chat_postMessage(
+                        channel=channel, thread_ts=thread_ts,
+                        text=f"⚠️ Couldn't process *{name}*: {exc}",
+                    )
+
+
+def _handle_app_mention(cfg: BanksConfig, web, llm, chat, event: dict,
+                        bot_user_id: str = "") -> None:
+    """Handle an @banks app_mention event.
+
+    Precedence (same order as _handle_message):
+    1. halt — @banks stop all
+    2. unhalt — @banks resume
+    3. file upload — @banks + file(s)
+    4. QA question / command — answer via qa.handle_qa_mention
+    """
+    text = event.get("text") or ""
+    user_id = event.get("user", "")
+    channel = event.get("channel")
+    # Only thread if already in a thread; top-level @banks → reply in main channel
+    thread_ts = event.get("thread_ts") or None
+
+    # Strip the @mention prefix before checking intent
+    stripped = strip_mention(text, bot_user_id) if bot_user_id else text.strip()
+
+    # 1. halt
+    if is_halt_command(stripped):
+        if not is_authorized(cfg, user_id):
+            return
+        set_halt(reason=f"operator command: '{stripped.strip()}'")
+        _debug_log(f"@mention from {user_id!r}: halt triggered")
+        if channel:
+            web.chat_postMessage(
+                channel=channel, thread_ts=thread_ts,
+                text=("🛑 *Banks halted — ALL jobs suspended.* Nothing will send until "
+                      "you say `@banks resume`."),
+            )
+        return
+
+    # 2. unhalt
+    if is_unhalt_command(stripped):
+        if not is_authorized(cfg, user_id):
+            return
+        clear_halt()
+        _debug_log(f"@mention from {user_id!r}: resume")
+        if channel:
+            web.chat_postMessage(
+                channel=channel, thread_ts=thread_ts,
+                text="✅ *Banks resumed.* Standing jobs run again on the next tick.",
+            )
+        return
+
+    # 3. file upload
+    if event.get("files") and should_ingest_mention_file(cfg, event):
+        try:
+            _handle_mention_file(cfg, web, chat, event)
+        except Exception as exc:
+            print(f"[listener] mention file error: {exc!r}", flush=True)
+        return
+
+    if not is_authorized(cfg, user_id):
+        print(f"[listener] mention ignored — user {user_id!r} not authorized "
+              f"(approver={cfg.approver_user_id!r})", flush=True)
+        return
+    print(f"[listener] @mention from {user_id!r}: {stripped!r}", flush=True)
+
+    # 4. Deterministic CONTROL commands (mutations) — checked BEFORE the LLM.
+    # These freeze a company / stop follow-ups, so they must never be LLM-executed
+    # (the QA layer is read-only). Only mutating intents are handled here; read
+    # intents fall through to the QA layer's tool-calling.
+    cmd = route(cfg.db_path, stripped, llm)
+    if cmd.intent in ("stop_company", "replied"):
+        reply = handle_command(cfg.db_path, cmd)
+        print(f"[listener] control cmd intent={cmd.intent!r} -> {reply!r}", flush=True)
+        if reply and channel:
+            web.chat_postMessage(channel=channel, thread_ts=thread_ts, text=reply)
+        return
+
+    # 5. QA (read-only LLM tool-calling)
+    from .qa import handle_qa_mention
+    try:
+        reply = handle_qa_mention(
+            cfg=cfg, db_path=cfg.db_path, text=stripped,
+            user_id=user_id, llm=llm, thread_ts=thread_ts,
+        )
+    except Exception as exc:
+        print(f"[listener] qa error: {exc!r}", flush=True)
+        reply = "⚠️ Something went wrong — try again."
+    print(f"[listener] qa reply: {reply!r}", flush=True)
+    if reply and channel:
+        web.chat_postMessage(channel=channel, thread_ts=thread_ts, text=reply)
+
+
+def strip_mention(text: str, bot_user_id: str) -> str:
+    """Re-export from qa for use in socket_listener."""
+    from .qa import strip_mention as _strip
+    return _strip(text, bot_user_id)
+
+
+def _mentions_bot(event: dict, bot_user_id: str) -> bool:
+    """Return True if the event mentions the bot.
+
+    Slack file-share messages often omit the mention from ``text`` and put it
+    only in ``blocks[].elements`` as a rich_text user element.  Check both so
+    file uploads tagged with @banks are routed correctly regardless of Slack's
+    block vs. plain-text choice.
+
+    Also accepts the ``<@UID|display>`` variant that Slack occasionally emits.
+    """
+    if not bot_user_id:
+        text = event.get("text") or ""
+        return text.strip().startswith("<@")
+    text = event.get("text") or ""
+    # Plain-text check — bot_user_id prefix handles <@UID> and <@UID|name>
+    if f"<@{bot_user_id}" in text:
+        return True
+    # Rich-text block check — walk all block elements
+    for block in event.get("blocks") or []:
+        for element in block.get("elements") or []:
+            # rich_text_section wraps the actual inlines
+            for inner in element.get("elements") or [element]:
+                if inner.get("type") == "user" and inner.get("user_id") == bot_user_id:
+                    return True
+    return False
+
+
 def run(cfg: BanksConfig | None = None) -> None:
     cfg = cfg or load_config()
     if not (cfg.slack_bot_token and cfg.slack_app_token):
         raise SystemExit("Need BANKS_SLACK_BOT_TOKEN and BANKS_SLACK_APP_TOKEN.")
-    if not cfg.approver_user_id:
+    import os as _os
+    if not cfg.approver_user_id and not _os.environ.get("BANKS_SKIP_APPROVER_CHECK"):
         # Fail closed: an unset approver id makes is_authorized() allow anyone
         # (the test-workspace default). A live listener must never inherit that.
         raise SystemExit("Need BANKS_APPROVER_USER_ID set before running live — "
@@ -382,6 +620,14 @@ def run(cfg: BanksConfig | None = None) -> None:
     llm = load_llm_port()
     chat = LiveChatPort(cfg)
 
+    # Resolve bot's own user_id once at startup for @mention stripping
+    try:
+        bot_user_id = web.auth_test()["user_id"]
+        print(f"[listener] bot_user_id={bot_user_id!r}", flush=True)
+    except Exception as exc:
+        bot_user_id = ""
+        print(f"[listener] WARNING: auth_test failed — bot_user_id unknown: {exc!r}", flush=True)
+
     def _on(client: SocketModeClient, req: SocketModeRequest) -> None:
         # Ack first (Slack requires a prompt ack), then act.
         client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
@@ -392,10 +638,27 @@ def run(cfg: BanksConfig | None = None) -> None:
 
         if req.type == "events_api":
             event = (req.payload.get("event") or {})
-            if event.get("type") != "message":
+            etype = event.get("type")
+
+            # @banks mention (commands, QA, tagged uploads, halt, unhalt)
+            if etype == "app_mention":
+                try:
+                    _handle_app_mention(cfg, web, llm, chat, event, bot_user_id)
+                except Exception as exc:
+                    print(f"[listener] mention error: {exc!r}", flush=True)
                 return
-            # A dropped file (Simplify CSV, MOD-01) → intake; otherwise the
-            # halt→revise→command precedence in _handle_message.
+
+            if etype != "message":
+                return
+            # Slack sends ALL @mention messages (text and file) as message events
+            # when app_mention is not subscribed or not firing. Check for bot
+            # mention in the text and route to _handle_app_mention in both cases.
+            if _mentions_bot(event, bot_user_id):
+                try:
+                    _handle_app_mention(cfg, web, llm, chat, event, bot_user_id)
+                except Exception as exc:
+                    print(f"[listener] mention error: {exc!r}", flush=True)
+                return
             if event.get("files"):
                 try:
                     _handle_file(cfg, web, chat, event)

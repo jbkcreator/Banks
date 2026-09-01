@@ -92,7 +92,9 @@ def run_job(name: str, db_path: str, chat: ChatPort) -> dict | None:
         if not (cfg.intake_email and cfg.intake_email_password):
             return None
         port = LiveImapEmailPort(cfg.intake_email, cfg.intake_email_password)
-        ingested, skipped = ingest_email_confirmations(db_path, port, chat)
+        from .llmport import load_llm_port
+        ingested, skipped = ingest_email_confirmations(
+            db_path, port, chat, load_llm_port())
         if ingested:
             log_event(db_path, "draft_created", meta={"job": "email_intake_poll",
                       "ingested": ingested}, minutes_saved=0)

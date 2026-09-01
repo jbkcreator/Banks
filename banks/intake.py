@@ -196,83 +196,166 @@ def _surface_opportunity(db_path, chat, opp_id, parsed, fit, tier, pursuit_mode)
     return proposed
 
 
+_EMAIL_CONFIRM_SYSTEM = (
+    "The user applied to jobs at these companies (via Simplify): {companies}. "
+    "Decide whether the email below is a genuine confirmation that the user's JOB "
+    "APPLICATION WAS RECEIVED by ONE of those companies. Marketing, newsletters, "
+    "promotions, product/loan offers, rejections, interview invitations, one-time "
+    "passcodes, and any unrelated mail are NOT application confirmations. "
+    'Return JSON only: {{"confirmed": true or false, '
+    '"company": "<exact name copied from the list, or null>"}}.'
+)
+
+
+# Statuses a confirmation email must never touch. 'confirmed' avoids
+# double-processing; 'interviewing'/'closed' are terminal for cadence
+# (due_cadence_touches suppresses follow-ups on them) so a late/stray confirmation
+# must not reopen them. Keep in sync with governance.due_cadence_touches.
+_SETTLED_STATUSES = ("confirmed", "interviewing", "closed")
+
+
 def ingest_email_confirmations(
     db_path: str,
     email_port,
     chat: "ChatPort",
+    llm=None,
 ) -> tuple[int, int]:
-    """MOD-01 forwarded email confirmation listener.
+    """MOD-01 email confirmation listener — MATCH-AND-CONFIRM only.
 
-    Polls the EmailPort (LiveImapEmailPort in prod, FakeEmailPort in tests),
-    parses each confirmation for a company name, and records it as a new
-    opportunity held for enrichment. Returns (ingested, skipped).
+    Email is NOT used to discover new applications (a noisy personal inbox floods
+    junk). Instead each candidate email is matched against a company Josh actually
+    applied to — the opportunities already recorded from the Simplify CSV / manual
+    intake — and an LLM confirms it's a genuine "application received" for that
+    company. On a confirmed match we mark that opportunity `confirmed`; we NEVER
+    create a new opportunity from email, and anything that doesn't match a known
+    application is discarded (never logged). Returns (confirmed, skipped).
 
-    Decisions: dedicated banks-intake@gmail.com, polled every 10 min by
-    scheduler job 'email_intake_poll'. Josh forwards; Banks only sees what
-    he sends (no full inbox access).
+    The LLM is the gate: with no llm we confirm nothing (fail safe, no junk).
     """
-    from .emailport import extract_company, is_confirmation_email
+    from .normalise import normalise_company
 
-    import time
-    t0 = time.monotonic()
+    with cursor(db_path) as cur:
+        rows = cur.execute(
+            "SELECT id, company_normalized, status FROM opportunities "
+            "WHERE company_normalized IS NOT NULL AND company_normalized != ''"
+        ).fetchall()
+    known = [(r["id"], r["company_normalized"], r["status"]) for r in rows]
+
     messages = email_port.get_confirmations()
-    ingested = skipped = 0
+    confirmed = skipped = 0
 
     for msg in messages:
         subject = msg.get("subject", "")
         body = msg.get("body", "")
-        if not is_confirmation_email(subject, body):
+        frm = msg.get("from", "")
+        blob = f"{subject}\n{frm}\n{body}".lower()
+
+        # Narrow: candidate applications whose company name appears in the email.
+        # Exclude any already-settled status (confirmed OR terminal): a late/duplicate
+        # confirmation must never reopen a closed/interviewing opp back to 'confirmed'
+        # (which would re-arm cadence follow-ups). _SETTLED is the guard.
+        cands = [k for k in known if k[1] and k[1] in blob]
+        cands = [k for k in cands if k[2] not in _SETTLED_STATUSES]
+        if not cands:
+            skipped += 1
+            continue
+        if llm is None:
+            skipped += 1  # confirmation requires the LLM gate — fail safe
+            continue
+
+        names = sorted({k[1] for k in cands})
+        try:
+            data = llm.extract_json(
+                _EMAIL_CONFIRM_SYSTEM.format(companies=", ".join(names)),
+                f"Subject: {subject}\nFrom: {frm}\n\n{body[:2000]}",
+            )
+        except Exception:
+            skipped += 1
+            continue
+        if not data.get("confirmed"):
             skipped += 1
             continue
 
-        resolved = extract_company(subject, body, msg.get("from", ""))
-        company = resolved or "Unknown (forwarded email)"
-        title = "(from forwarded confirmation)"
+        target = normalise_company(data.get("company") or "")
+        matched = next((k for k in cands if k[1] == target), None) or cands[0]
+        opp_id, company = matched[0], matched[1]
 
-        if is_target_excluded(db_path, company=company)[0]:
-            print(f"[intake] excluded: company={company!r}")
-            skipped += 1
+        # Conditional update: only transition from a non-settled status, and only
+        # act (funnel event + receipt) when THIS statement actually changed a row.
+        # Guards two races: (a) a terminal status slipping through, (b) two
+        # confirmation emails for the same app in one poll — the second finds the
+        # row already 'confirmed' and changes 0 rows, so no duplicate event/receipt.
+        with cursor(db_path) as cur:
+            cur.execute(
+                "UPDATE opportunities SET status='confirmed' "
+                "WHERE id=? AND status NOT IN (%s)"
+                % ",".join("?" * len(_SETTLED_STATUSES)),
+                (opp_id, *_SETTLED_STATUSES),
+            )
+            changed = cur.rowcount
+            det = cur.execute("SELECT title, source_url FROM opportunities WHERE id=?",
+                              (opp_id,)).fetchone()
+        if not changed:
+            skipped += 1  # already settled between snapshot and now — no double count
             continue
+        # Reflect the new state in the in-poll snapshot so a later message in the
+        # same poll won't re-select this now-confirmed opportunity.
+        known = [(i, c, "confirmed" if i == opp_id else s) for (i, c, s) in known]
+        from .governance import record_funnel_event
+        record_funnel_event(db_path, opp_id, "application_confirmed")
+        print(f"[intake] confirmed application: company={company!r} opp={opp_id}")
+        _post_intake_receipt(chat, company, role=(det["title"] if det else "") or "",
+                             source_url=(det["source_url"] if det else None),
+                             message_id=msg.get("message_id"))
+        confirmed += 1
 
-        # Dedup only when we actually resolved a company. Two different real
-        # applications can both fail to resolve -> "Unknown"; deduping those
-        # against each other would silently drop a genuine second application.
-        # Treat Unknown as always-distinct (agreed 2026-08-31).
-        if resolved and find_duplicate(db_path, None, title, company) is not None:
-            print(f"[intake] duplicate: company={company!r} — skipped")
-            skipped += 1
-            continue
-
-        from .targets import target_priority
-        fit, tier, pursuit_mode, needs_enrichment = _score_row(
-            {}, comp_k=None, vertical=None,
-            target_priority=target_priority(db_path, company))
-        record_opportunity(
-            db_path, title, "email_confirmation", fit,
-            tier=tier, pursuit_mode=pursuit_mode,
-            company_normalized=normalise_company(company),
-            needs_enrichment=1,  # always held — no JD details in a confirmation
-        )
-        print(f"[intake] ingested: company={company!r} tier={tier} fit={fit}")
-        # Visible receipt (2026-08-31): a confirmation is held, not surfaced as a
-        # Tier-B card (Decision 4), so without this the intake is invisible in
-        # Slack. One line proves the pipe caught it, without flooding the channel.
-        _post_intake_receipt(chat, company)
-        ingested += 1
-
-    elapsed = round(time.monotonic() - t0, 1)
-    print(f"[intake] done — ingested={ingested} skipped={skipped} elapsed={elapsed}s")
-    return ingested, skipped
+    print(f"[intake] done — confirmed={confirmed} skipped={skipped}")
+    return confirmed, skipped
 
 
-def _post_intake_receipt(chat: "ChatPort", company: str) -> None:
-    """One-line Slack receipt that a forwarded confirmation was logged. Held for
-    enrichment (no Tier-B card), so this is the only visible sign intake worked.
-    A Slack failure must never sink the intake — swallow it."""
+def _gmail_link(message_id: str | None) -> str | None:
+    """Deep-link to the exact confirmation email in Josh's Gmail. The
+    rfc822msgid: search form resolves regardless of folder/label."""
+    if not message_id or not message_id.strip():
+        return None
+    import urllib.parse
+    mid = message_id.strip().strip("<>")
+    return ("https://mail.google.com/mail/u/0/#search/rfc822msgid:"
+            + urllib.parse.quote(mid))
+
+
+def _posting_link(source_url: str | None, role: str, company: str) -> str:
+    """The job posting URL if we have it, else a LinkedIn jobs search built from
+    role + company so the receipt always has a live link to the role."""
+    if source_url and source_url.strip():
+        return source_url.strip()
+    import urllib.parse
+    q = urllib.parse.quote_plus(f"{role} {company}".strip())
+    return f"https://www.linkedin.com/jobs/search/?keywords={q}"
+
+
+def _post_intake_receipt(chat: "ChatPort", company: str, role: str = "",
+                         source_url: str | None = None,
+                         message_id: str | None = None) -> None:
+    """Clear, actionable Slack receipt when an application is confirmed: which
+    company + role, a link back to the posting, a link to the confirmation email,
+    and the two useful next moves. A Slack failure must never sink the intake."""
     if chat is None:
         return
-    label = "an application" if company.startswith("Unknown") else f"application to {company}"
-    text = f":inbox_tray: Logged {label} — held for enrichment (surfaces once comp/industry fill)."
+    display = company.title() if company and company.islower() else company
+    lines = [f":white_check_mark: *Application confirmed* — *{display}* received "
+             f"your application."]
+    if role:
+        lines.append(f"*Role:* {role}")
+    refs = [f"<{_posting_link(source_url, role, display)}|View the job posting>"]
+    gm = _gmail_link(message_id)
+    if gm:
+        refs.append(f"<{gm}|View the confirmation email>")
+    lines.append("*Links:* " + "  ·  ".join(refs))
+    lines.append(
+        f"*What next?* Ask `@banks who do I know at {display}` to find a warm "
+        f"intro, or `@banks status {display}` to check where it stands.")
+    text = "\n".join(lines)
     try:
         chat.post_blocks(text, [
             {"type": "section", "text": {"type": "mrkdwn", "text": text}},
