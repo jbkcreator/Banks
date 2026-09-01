@@ -214,6 +214,34 @@ class TestEmailIntake:
         confirmed, skipped = ingest_email_confirmations(db_path, port, FakeChatPort(), llm)
         assert confirmed == 0  # already confirmed -> skipped, no double count
 
+    def test_receipt_has_role_posting_and_email_links(self, db_path):
+        record_opportunity(db_path, "Enterprise AE", "simplify", 60, tier="B",
+                           company_normalized="acme", status="sourced",
+                           source_url="https://boards.greenhouse.io/acme/jobs/9")
+        llm = FakeLLMPort({"acme": '{"confirmed": true, "company": "acme"}'})
+        chat = FakeChatPort()
+        port = FakeEmailPort([
+            {"subject": "Your application to Acme was received", "body": "",
+             "from": "no-reply@acme.com", "date": "",
+             "message_id": "<abc123@acme.com>"}])
+        ingest_email_confirmations(db_path, port, chat, llm)
+        text = chat.posts[0]["text"]
+        assert "Enterprise AE" in text
+        assert "boards.greenhouse.io/acme/jobs/9" in text        # posting link
+        assert "rfc822msgid:abc123" in text                       # gmail deep-link
+        assert "who do I know at Acme" in text                     # next-step nudge
+
+    def test_receipt_falls_back_to_linkedin_when_no_url(self, db_path):
+        record_opportunity(db_path, "Head of Growth", "simplify", 60, tier="B",
+                           company_normalized="beta", status="sourced")  # no source_url
+        llm = FakeLLMPort({"beta": '{"confirmed": true, "company": "beta"}'})
+        chat = FakeChatPort()
+        port = FakeEmailPort([
+            {"subject": "Your application to Beta received", "body": "",
+             "from": "no-reply@beta.com", "date": "", "message_id": ""}])
+        ingest_email_confirmations(db_path, port, chat, llm)
+        assert "linkedin.com/jobs/search" in chat.posts[0]["text"]
+
     def test_fake_port_returns_messages(self):
         port = FakeEmailPort([{"subject": "Application received — Acme", "body": ""}])
         assert len(port.get_confirmations()) == 1

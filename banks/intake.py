@@ -272,23 +272,62 @@ def ingest_email_confirmations(
 
         with cursor(db_path) as cur:
             cur.execute("UPDATE opportunities SET status='confirmed' WHERE id=?", (opp_id,))
+            det = cur.execute("SELECT title, source_url FROM opportunities WHERE id=?",
+                              (opp_id,)).fetchone()
         from .governance import record_funnel_event
         record_funnel_event(db_path, opp_id, "application_confirmed")
         print(f"[intake] confirmed application: company={company!r} opp={opp_id}")
-        _post_intake_receipt(chat, company)
+        _post_intake_receipt(chat, company, role=(det["title"] if det else "") or "",
+                             source_url=(det["source_url"] if det else None),
+                             message_id=msg.get("message_id"))
         confirmed += 1
 
     print(f"[intake] done — confirmed={confirmed} skipped={skipped}")
     return confirmed, skipped
 
 
-def _post_intake_receipt(chat: "ChatPort", company: str) -> None:
-    """One-line Slack receipt that an application was confirmed by the company.
-    A Slack failure must never sink the intake — swallow it."""
+def _gmail_link(message_id: str | None) -> str | None:
+    """Deep-link to the exact confirmation email in Josh's Gmail. The
+    rfc822msgid: search form resolves regardless of folder/label."""
+    if not message_id or not message_id.strip():
+        return None
+    import urllib.parse
+    mid = message_id.strip().strip("<>")
+    return ("https://mail.google.com/mail/u/0/#search/rfc822msgid:"
+            + urllib.parse.quote(mid))
+
+
+def _posting_link(source_url: str | None, role: str, company: str) -> str:
+    """The job posting URL if we have it, else a LinkedIn jobs search built from
+    role + company so the receipt always has a live link to the role."""
+    if source_url and source_url.strip():
+        return source_url.strip()
+    import urllib.parse
+    q = urllib.parse.quote_plus(f"{role} {company}".strip())
+    return f"https://www.linkedin.com/jobs/search/?keywords={q}"
+
+
+def _post_intake_receipt(chat: "ChatPort", company: str, role: str = "",
+                         source_url: str | None = None,
+                         message_id: str | None = None) -> None:
+    """Clear, actionable Slack receipt when an application is confirmed: which
+    company + role, a link back to the posting, a link to the confirmation email,
+    and the two useful next moves. A Slack failure must never sink the intake."""
     if chat is None:
         return
-    text = (f":white_check_mark: Confirmed — *{company}* received your application "
-            f"(matched to your tracked applications).")
+    display = company.title() if company and company.islower() else company
+    lines = [f":white_check_mark: *Application confirmed* — *{display}* received "
+             f"your application."]
+    if role:
+        lines.append(f"*Role:* {role}")
+    refs = [f"<{_posting_link(source_url, role, display)}|View the job posting>"]
+    gm = _gmail_link(message_id)
+    if gm:
+        refs.append(f"<{gm}|View the confirmation email>")
+    lines.append("*Links:* " + "  ·  ".join(refs))
+    lines.append(f"_Next: `who do I know at {display}` for a warm intro · "
+                 f"`status {display}` to track it._")
+    text = "\n".join(lines)
     try:
         chat.post_blocks(text, [
             {"type": "section", "text": {"type": "mrkdwn", "text": text}},

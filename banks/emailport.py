@@ -68,6 +68,7 @@ class LiveImapEmailPort:
                     subject = msg.get("Subject", "")
                     from_addr = msg.get("From", "")
                     date = msg.get("Date", "")
+                    message_id = msg.get("Message-ID", "")
                     body = _extract_body(msg)
                     # Cheap pre-narrow only (keyword). The REAL gate is downstream
                     # in intake: match against a company Josh actually applied to
@@ -80,6 +81,7 @@ class LiveImapEmailPort:
                             "body": body,
                             "from": from_addr,
                             "date": date,
+                            "message_id": message_id,
                         })
         except (imaplib.IMAP4.error, OSError) as e:
             print(f"[intake] ERROR — IMAP auth/network failure: {e}")
