@@ -569,6 +569,33 @@ def strip_mention(text: str, bot_user_id: str) -> str:
     return _strip(text, bot_user_id)
 
 
+def _mentions_bot(event: dict, bot_user_id: str) -> bool:
+    """Return True if the event mentions the bot.
+
+    Slack file-share messages often omit the mention from ``text`` and put it
+    only in ``blocks[].elements`` as a rich_text user element.  Check both so
+    file uploads tagged with @banks are routed correctly regardless of Slack's
+    block vs. plain-text choice.
+
+    Also accepts the ``<@UID|display>`` variant that Slack occasionally emits.
+    """
+    if not bot_user_id:
+        text = event.get("text") or ""
+        return text.strip().startswith("<@")
+    text = event.get("text") or ""
+    # Plain-text check — bot_user_id prefix handles <@UID> and <@UID|name>
+    if f"<@{bot_user_id}" in text:
+        return True
+    # Rich-text block check — walk all block elements
+    for block in event.get("blocks") or []:
+        for element in block.get("elements") or []:
+            # rich_text_section wraps the actual inlines
+            for inner in element.get("elements") or [element]:
+                if inner.get("type") == "user" and inner.get("user_id") == bot_user_id:
+                    return True
+    return False
+
+
 def run(cfg: BanksConfig | None = None) -> None:
     cfg = cfg or load_config()
     if not (cfg.slack_bot_token and cfg.slack_app_token):
@@ -626,12 +653,7 @@ def run(cfg: BanksConfig | None = None) -> None:
             # Slack sends ALL @mention messages (text and file) as message events
             # when app_mention is not subscribed or not firing. Check for bot
             # mention in the text and route to _handle_app_mention in both cases.
-            text = event.get("text") or ""
-            _is_mention = (
-                (bot_user_id and f"<@{bot_user_id}>" in text)
-                or (not bot_user_id and text.strip().startswith("<@"))
-            )
-            if _is_mention:
+            if _mentions_bot(event, bot_user_id):
                 try:
                     _handle_app_mention(cfg, web, llm, chat, event, bot_user_id)
                 except Exception as exc:
