@@ -11,8 +11,10 @@ from banks.emailport import (FakeEmailPort, LiveImapEmailPort, extract_company,
 from banks.lanes import _linkedin_action_line, draft_linkedin_lane, draft_employee_lane
 from banks.opportunity import CareerFacts
 from banks.intake import ingest_email_confirmations
-from banks.store import init_db
+from banks.store import cursor, init_db
 from banks.chatport import FakeChatPort
+from banks.llmport import FakeLLMPort
+from banks.opportunity import record_opportunity
 
 
 _FACTS = CareerFacts(
@@ -128,93 +130,93 @@ class TestCompanyExtraction:
 
 
 class TestEmailIntake:
+    """Match-and-confirm: email never CREATES an opportunity — it only confirms
+    one Josh already applied to (from the Simplify CSV), gated by the LLM. This
+    kills the personal-inbox junk that the old create-from-email path produced."""
+
+    def _seed(self, db_path, company="acme"):
+        return record_opportunity(db_path, "AE role", "simplify", 60, tier="B",
+                                  company_normalized=company, status="sourced")
+
     def test_confirmation_email_detected(self):
         assert is_confirmation_email("Your application to Appfolio has been received")
-        assert is_confirmation_email("Thank you for applying to Buildium")
         assert not is_confirmation_email("Weekly newsletter from LinkedIn")
 
-    def test_rejection_not_a_confirmation(self):
-        assert not is_confirmation_email(
-            "Update on your application to Acme",
-            "Unfortunately we've decided not to move forward.")
-        assert not is_confirmation_email("Your application to Acme — next steps")
-        assert not is_confirmation_email(
-            "Re: your application", "We'd like to schedule your interview.")
-
-    def test_intake_skips_rejection(self, db_path):
-        port = FakeEmailPort([
-            {"subject": "Update on your application to Acme",
-             "body": "Unfortunately, we are not moving forward.", "from": "", "date": ""},
-        ])
-        ingested, skipped = ingest_email_confirmations(db_path, port, FakeChatPort())
-        assert (ingested, skipped) == (0, 1)
-
-    def test_intake_posts_receipt(self, db_path):
+    def test_matches_and_confirms_known_application(self, db_path):
+        opp = self._seed(db_path, "acme")
+        llm = FakeLLMPort({"acme": '{"confirmed": true, "company": "acme"}'})
         chat = FakeChatPort()
         port = FakeEmailPort([
-            {"subject": "Your application to Northspyre was received",
-             "body": "", "from": "", "date": ""},
-        ])
-        ingest_email_confirmations(db_path, port, chat)
-        assert any("Northspyre" in p["text"] for p in chat.posts)
+            {"subject": "Your application to Acme was received", "body": "",
+             "from": "no-reply@acme.com", "date": ""}])
+        confirmed, skipped = ingest_email_confirmations(db_path, port, chat, llm)
+        assert (confirmed, skipped) == (1, 0)
+        with cursor(db_path) as cur:
+            assert cur.execute("SELECT status FROM opportunities WHERE id=?",
+                               (opp,)).fetchone()["status"] == "confirmed"
+        assert any("Acme" in p["text"] or "acme" in p["text"] for p in chat.posts)
+
+    def test_marketing_email_never_matches_or_logs(self, db_path):
+        self._seed(db_path, "acme")
+        llm = FakeLLMPort({})  # should never even be consulted
+        port = FakeEmailPort([
+            {"subject": "Your HELOC application — you may be eligible",
+             "body": "Flexible access to your home equity!", "from": "promo@bank.com",
+             "date": ""}])
+        confirmed, skipped = ingest_email_confirmations(db_path, port, FakeChatPort(), llm)
+        assert confirmed == 0
+        # no new opportunity created from the marketing mail
+        with cursor(db_path) as cur:
+            assert cur.execute("SELECT COUNT(*) c FROM opportunities").fetchone()["c"] == 1
+
+    def test_llm_gate_rejects_non_confirmation_for_known_company(self, db_path):
+        # Email mentions a known company but the LLM says it's not a confirmation
+        # (e.g. a rejection) -> not confirmed, status unchanged.
+        opp = self._seed(db_path, "acme")
+        llm = FakeLLMPort({"acme": '{"confirmed": false, "company": null}'})
+        port = FakeEmailPort([
+            {"subject": "Update on your application to Acme",
+             "body": "Unfortunately we are not moving forward.", "from": "hr@acme.com",
+             "date": ""}])
+        confirmed, skipped = ingest_email_confirmations(db_path, port, FakeChatPort(), llm)
+        assert (confirmed, skipped) == (0, 1)
+        with cursor(db_path) as cur:
+            assert cur.execute("SELECT status FROM opportunities WHERE id=?",
+                               (opp,)).fetchone()["status"] == "sourced"
+
+    def test_no_llm_confirms_nothing(self, db_path):
+        self._seed(db_path, "acme")
+        port = FakeEmailPort([
+            {"subject": "Your application to Acme was received", "body": "",
+             "from": "no-reply@acme.com", "date": ""}])
+        confirmed, skipped = ingest_email_confirmations(db_path, port, FakeChatPort(), None)
+        assert confirmed == 0  # fail safe without the LLM gate
+
+    def test_never_creates_new_opportunity(self, db_path):
+        # A confirmation for a company Josh never applied to -> no match -> ignored.
+        llm = FakeLLMPort({"ghostco": '{"confirmed": true, "company": "ghostco"}'})
+        port = FakeEmailPort([
+            {"subject": "Your application to GhostCo was received", "body": "",
+             "from": "no-reply@ghostco.com", "date": ""}])
+        confirmed, skipped = ingest_email_confirmations(db_path, port, FakeChatPort(), llm)
+        assert confirmed == 0
+        with cursor(db_path) as cur:
+            assert cur.execute("SELECT COUNT(*) c FROM opportunities").fetchone()["c"] == 0
+
+    def test_idempotent_already_confirmed(self, db_path):
+        opp = self._seed(db_path, "acme")
+        with cursor(db_path) as cur:
+            cur.execute("UPDATE opportunities SET status='confirmed' WHERE id=?", (opp,))
+        llm = FakeLLMPort({"acme": '{"confirmed": true, "company": "acme"}'})
+        port = FakeEmailPort([
+            {"subject": "Your application to Acme was received", "body": "",
+             "from": "no-reply@acme.com", "date": ""}])
+        confirmed, skipped = ingest_email_confirmations(db_path, port, FakeChatPort(), llm)
+        assert confirmed == 0  # already confirmed -> skipped, no double count
 
     def test_fake_port_returns_messages(self):
         port = FakeEmailPort([{"subject": "Application received — Acme", "body": ""}])
-        msgs = port.get_confirmations()
-        assert len(msgs) == 1
-
-    def test_ingest_email_confirmations_records_opp(self, db_path):
-        port = FakeEmailPort([
-            {"subject": "Your application to AppFolio was received", "body": "", "from": "", "date": ""},
-        ])
-        ingested, skipped = ingest_email_confirmations(db_path, port, FakeChatPort())
-        assert ingested == 1
-        assert skipped == 0
-
-    def test_non_confirmation_skipped(self, db_path):
-        port = FakeEmailPort([
-            {"subject": "LinkedIn weekly digest", "body": "Updates from your network", "from": "", "date": ""},
-        ])
-        ingested, skipped = ingest_email_confirmations(db_path, port, FakeChatPort())
-        assert ingested == 0
-        assert skipped == 1
-
-    def test_duplicate_skipped(self, db_path):
-        # Same resolvable company forwarded twice -> one opp, one dedup skip.
-        port = FakeEmailPort([
-            {"subject": "Your application to DupeCo was received", "body": "", "from": "", "date": ""},
-            {"subject": "Your application to DupeCo was received", "body": "", "from": "", "date": ""},
-        ])
-        ingested, skipped = ingest_email_confirmations(db_path, port, FakeChatPort())
-        assert ingested == 1
-        assert skipped == 1
-
-    def test_unknown_confirmations_are_always_distinct(self, db_path):
-        # Two DIFFERENT real applications that resolve to no company must NOT
-        # dedup against each other — both are kept.
-        port = FakeEmailPort([
-            {"subject": "We received your application", "body": "", "from": "", "date": ""},
-            {"subject": "Your application has been received", "body": "", "from": "", "date": ""},
-        ])
-        ingested, skipped = ingest_email_confirmations(db_path, port, FakeChatPort())
-        assert ingested == 2
-        assert skipped == 0
-
-    def test_excluded_company_skipped(self, db_path):
-        from banks.store import cursor
-        from banks.store import init_db as _init
-        import datetime
-        with cursor(db_path) as cur:
-            # Store the normalised slug ("Excluded Corp" → "excluded"); is_company_excluded
-            # normalises the subject-derived name the same way before matching.
-            cur.execute("INSERT INTO company_exclusions (company_normalized, added_at) VALUES (?,?)",
-                        ("excluded", datetime.datetime.utcnow().isoformat()))
-        port = FakeEmailPort([
-            {"subject": "Your application to Excluded Corp was received", "body": "", "from": "", "date": ""},
-        ])
-        ingested, skipped = ingest_email_confirmations(db_path, port, FakeChatPort())
-        assert ingested == 0
-        assert skipped == 1
+        assert len(port.get_confirmations()) == 1
 
     def test_live_imap_port_exists(self):
         # Just verify the class is importable and instantiable with credentials
@@ -239,10 +241,13 @@ class TestEmailIntake:
         finally:
             cfgmod.load_config = orig
 
-    def test_intake_job_ingests_via_live_port(self, db_path, monkeypatch):
-        # With creds set, the job builds the IMAP port and records confirmations.
+    def test_intake_job_confirms_via_live_port(self, db_path, monkeypatch):
+        # With creds set, the job builds the IMAP port + LLM and confirms a
+        # matching, already-tracked application.
         from banks import jobs
         from banks.config import BanksConfig
+        record_opportunity(db_path, "AE", "simplify", 60, tier="B",
+                           company_normalized="appfolio", status="sourced")
         monkeypatch.setattr(
             "banks.config.load_config",
             lambda: BanksConfig(None, None, intake_email="jbkantor@gmail.com",
@@ -251,6 +256,9 @@ class TestEmailIntake:
             "banks.emailport.LiveImapEmailPort",
             lambda email, pw: FakeEmailPort([
                 {"subject": "Your application to AppFolio was received",
-                 "body": "", "from": "", "date": ""}]))
+                 "body": "", "from": "no-reply@appfolio.com", "date": ""}]))
+        monkeypatch.setattr(
+            "banks.llmport.load_llm_port",
+            lambda: FakeLLMPort({"appfolio": '{"confirmed": true, "company": "appfolio"}'}))
         result = jobs.run_job("email_intake_poll", db_path, FakeChatPort())
         assert result == {"ingested": 1, "skipped": 0}

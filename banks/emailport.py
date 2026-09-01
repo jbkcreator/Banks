@@ -69,18 +69,18 @@ class LiveImapEmailPort:
                     from_addr = msg.get("From", "")
                     date = msg.get("Date", "")
                     body = _extract_body(msg)
+                    # Cheap pre-narrow only (keyword). The REAL gate is downstream
+                    # in intake: match against a company Josh actually applied to
+                    # (from the Simplify CSV) + an LLM confirmation. We do NOT mark
+                    # anything read — Josh's inbox is left completely untouched, and
+                    # the 24h UNSEEN window + idempotency prevent reprocessing.
                     if is_confirmation_email(subject, body):
-                        print(f"[intake] confirmation: subject={subject!r} from={from_addr!r}")
                         messages.append({
                             "subject": subject,
                             "body": body,
                             "from": from_addr,
                             "date": date,
                         })
-                        # Only mark read if it's a confirmation — leave other mail untouched
-                        conn.store(uid, "+FLAGS", "\\Seen")
-                    else:
-                        print(f"[intake] skip (not confirmation): subject={subject!r}")
         except (imaplib.IMAP4.error, OSError) as e:
             print(f"[intake] ERROR — IMAP auth/network failure: {e}")
         return messages
