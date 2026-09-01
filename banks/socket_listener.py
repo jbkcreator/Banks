@@ -617,6 +617,8 @@ def run(cfg: BanksConfig | None = None) -> None:
             # when app_mention is not subscribed or not firing. Check for bot
             # mention in the text and route to _handle_app_mention in both cases.
             text = event.get("text") or ""
+            if event.get("files"):
+                print(f"[listener] file event text={text!r} files={[f.get('name') for f in event.get('files',[])]}", flush=True)
             _is_mention = (
                 (bot_user_id and f"<@{bot_user_id}>" in text)
                 or (not bot_user_id and text.strip().startswith("<@"))
