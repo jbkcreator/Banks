@@ -442,7 +442,6 @@ def _handle_mention_file(cfg: BanksConfig, web, chat, event: dict) -> None:
         else:
             # PDF / docx / txt → docparse + manual_intake
             from .docparse import TooLittleText, extract_text
-            from .llmport import load_llm_port
             from .manual_intake import ingest_manual
             try:
                 text = extract_text(data, name)
@@ -463,8 +462,7 @@ def _handle_mention_file(cfg: BanksConfig, web, chat, event: dict) -> None:
                     )
                 continue
             try:
-                llm = load_llm_port()
-                result = ingest_manual(cfg.db_path, text, chat, llm)
+                result = ingest_manual(cfg.db_path, chat, jd_text=text)
                 if channel:
                     web.chat_postMessage(
                         channel=channel, thread_ts=thread_ts,
