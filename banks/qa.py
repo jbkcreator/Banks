@@ -230,13 +230,9 @@ def handle_qa_mention(
     """Handle an @banks mention. Returns the reply string, or None if silently
     ignored (unauthorized user).
 
-    Called by socket_listener on app_mention events after stripping the @mention.
-    Approver-only; rate-limited at RATE_LIMIT_RPM per user per minute.
+    Auth check is done by the caller (socket_listener._handle_app_mention) before
+    this is called. Rate-limited at RATE_LIMIT_RPM per user per minute.
     """
-    from .socket_listener import is_authorized
-    if not is_authorized(cfg, user_id):
-        return None
-
     bucket = _rate_buckets[user_id]
     try:
         check_rate_limit(bucket)

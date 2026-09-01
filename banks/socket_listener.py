@@ -534,7 +534,10 @@ def _handle_app_mention(cfg: BanksConfig, web, llm, chat, event: dict,
 
     # 4. QA / command
     if not is_authorized(cfg, user_id):
+        print(f"[listener] mention ignored — user {user_id!r} not authorized "
+              f"(approver={cfg.approver_user_id!r})", flush=True)
         return
+    print(f"[listener] @mention from {user_id!r}: {stripped!r}", flush=True)
     from .qa import handle_qa_mention
     try:
         reply = handle_qa_mention(
@@ -544,6 +547,7 @@ def _handle_app_mention(cfg: BanksConfig, web, llm, chat, event: dict,
     except Exception as exc:
         print(f"[listener] qa error: {exc!r}", flush=True)
         reply = "⚠️ Something went wrong — try again."
+    print(f"[listener] qa reply: {reply!r}", flush=True)
     if reply and channel:
         web.chat_postMessage(channel=channel, thread_ts=thread_ts, text=reply)
 
