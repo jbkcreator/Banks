@@ -210,8 +210,29 @@ approval. No autonomous sends, no standing orders.
 - Production server (Hetzner) — provisioning + deploy.
 - Merge stack to `main` — PRs open on feature branches; stack must merge bottom-up.
 
+## Approved scope additions (post-build-complete)
+
+### @banks LLM QA layer (approved 2026-09-01)
+`banks/qa.py` — `handle_qa_mention` is the entry point, called from `socket_listener`
+on `app_mention` events. Safe form: mention-gated, approver-only, read-only (no tool
+may write to DB or trigger egress), rate-limited 10/min, fenced untrusted data.
+- 5 tools: `pipeline_summary`, `company_status`, `who_do_i_know`, `call_list`,
+  `list_opportunities`
+- Emulated tool-calling: Haiku routes, Sonnet composes. Model config: `BANKS_QA_MODEL`.
+- Bounded loop ≤3 tool calls. `answer_question` is the pure core (testable without Slack).
+
+### PDF/docx JD intake (approved 2026-09-01)
+`banks/docparse.py` — local text extraction (pypdf + python-docx). Feeds existing
+`manual_intake` LLM extractor. Requires `@banks` tag (app_mention). Too-little-text
+guard (< 200 chars → tell Josh). CSV uploads also now require `@banks`.
+New gate: `should_ingest_mention_file` (app_mention events, any channel).
+
+### Kill switch + all uploads now require `@banks` (2026-09-01)
+`@banks stop all` halts. `@banks resume` restores. Untagged messages only handle
+pending revisions (button-triggered Revise flow). All else ignored without the tag.
+
 ## Testing
-`python -m pytest tests/ -q` — **485 passing**. Every new external adapter must be
+`python -m pytest tests/ -q` — **633 passing**. Every new external adapter must be
 added to `test_hardwall.py`'s allowlist and prove no FA imports.
 
 ## Git

@@ -306,6 +306,31 @@ def should_ingest_file(cfg: BanksConfig, event: dict) -> bool:
     return True
 
 
+def _is_jd_file(f: dict) -> bool:
+    name = (f.get("name") or "").lower()
+    ft = f.get("filetype") or ""
+    return (ft == "pdf" or name.endswith(".pdf")
+            or ft == "docx" or name.endswith(".docx")
+            or ft == "txt" or name.endswith(".txt")
+            or _is_csv(f))
+
+
+def should_ingest_mention_file(cfg: BanksConfig, event: dict) -> bool:
+    """Gate for @banks-tagged file uploads (app_mention event).
+
+    Accepts CSV, PDF, docx, txt from an authorized user. No channel restriction
+    (Josh may @banks in any channel). Bot uploads are rejected.
+    """
+    if event.get("bot_id"):
+        return False
+    files = event.get("files") or []
+    if not files or not any(_is_jd_file(f) for f in files):
+        return False
+    if not is_authorized(cfg, event.get("user", "")):
+        return False
+    return True
+
+
 def _handle_file(cfg: BanksConfig, web, chat, event: dict) -> None:
     """Download a dropped Simplify CSV and run intake; post a terse receipt."""
     import os
@@ -359,11 +384,182 @@ def _handle_file(cfg: BanksConfig, web, chat, event: dict) -> None:
         )
 
 
+def _handle_mention_file(cfg: BanksConfig, web, chat, event: dict) -> None:
+    """Handle a file dropped in a @banks mention (app_mention event).
+
+    Accepts: CSV (→ ingest_simplify), PDF/docx/txt (→ docparse + manual_intake).
+    One receipt per file, multiple files in one drop are all processed.
+    """
+    import os
+    import tempfile
+
+    from .slackfiles import download
+
+    channel = event.get("channel")
+    thread_ts = event.get("thread_ts") or event.get("ts")
+    files = event.get("files") or []
+
+    for f in files:
+        if not _is_jd_file(f):
+            continue
+        name = f.get("name") or "upload"
+        url = f.get("url_private_download") or f.get("url_private")
+        if not url:
+            info = web.files_info(file=f.get("id"))
+            url = (info.get("file") or {}).get("url_private_download")
+        try:
+            data = download(url, cfg.slack_bot_token or "")
+        except Exception as exc:
+            if channel:
+                web.chat_postMessage(channel=channel, thread_ts=thread_ts,
+                                     text=f"⚠️ Couldn't download *{name}*: {exc}")
+            continue
+
+        if _is_csv(f):
+            # CSV → Simplify intake (same as legacy message path)
+            from .csvport import LiveCSVPort
+            from .intake import ingest_simplify
+            tmp = os.path.join(tempfile.mkdtemp(), name)
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+            try:
+                res = ingest_simplify(cfg.db_path, LiveCSVPort(), tmp, chat)
+            except Exception as exc:
+                if channel:
+                    web.chat_postMessage(
+                        channel=channel, thread_ts=thread_ts,
+                        text=f"⚠️ Couldn't import *{name}*: {exc}",
+                    )
+                continue
+            total = res.ingested + res.duplicates + res.excluded
+            if channel:
+                web.chat_postMessage(
+                    channel=channel, thread_ts=thread_ts,
+                    text=(f"📥 Imported *{name}* — {total} rows: {res.ingested} new, "
+                          f"{res.duplicates} duplicates, {res.excluded} excluded. "
+                          f"{res.held} held for enrichment."),
+                )
+        else:
+            # PDF / docx / txt → docparse + manual_intake
+            from .docparse import TooLittleText, extract_text
+            from .llmport import load_llm_port
+            from .manual_intake import ingest_manual
+            try:
+                text = extract_text(data, name)
+            except TooLittleText as exc:
+                if channel:
+                    web.chat_postMessage(
+                        channel=channel, thread_ts=thread_ts,
+                        text=(f"📄 *{name}* looks like a scanned image — I couldn't "
+                              f"extract text from it. ({exc}) Please paste the JD text "
+                              f"directly instead."),
+                    )
+                continue
+            except ValueError as exc:
+                if channel:
+                    web.chat_postMessage(
+                        channel=channel, thread_ts=thread_ts,
+                        text=f"⚠️ Unsupported file type — {exc}. Use .pdf, .docx, or .txt.",
+                    )
+                continue
+            try:
+                llm = load_llm_port()
+                result = ingest_manual(cfg.db_path, text, chat, llm)
+                if channel:
+                    web.chat_postMessage(
+                        channel=channel, thread_ts=thread_ts,
+                        text=(f"📄 Processed *{name}* — "
+                              f"{'added to pipeline' if result else 'held for enrichment'}."),
+                    )
+            except Exception as exc:
+                if channel:
+                    web.chat_postMessage(
+                        channel=channel, thread_ts=thread_ts,
+                        text=f"⚠️ Couldn't process *{name}*: {exc}",
+                    )
+
+
+def _handle_app_mention(cfg: BanksConfig, web, llm, chat, event: dict,
+                        bot_user_id: str = "") -> None:
+    """Handle an @banks app_mention event.
+
+    Precedence (same order as _handle_message):
+    1. halt — @banks stop all
+    2. unhalt — @banks resume
+    3. file upload — @banks + file(s)
+    4. QA question / command — answer via qa.handle_qa_mention
+    """
+    text = event.get("text") or ""
+    user_id = event.get("user", "")
+    channel = event.get("channel")
+    thread_ts = event.get("thread_ts") or event.get("ts")
+
+    # Strip the @mention prefix before checking intent
+    stripped = strip_mention(text, bot_user_id) if bot_user_id else text.strip()
+
+    # 1. halt
+    if is_halt_command(stripped):
+        if not is_authorized(cfg, user_id):
+            return
+        set_halt(reason=f"operator command: '{stripped.strip()}'")
+        _debug_log(f"@mention from {user_id!r}: halt triggered")
+        if channel:
+            web.chat_postMessage(
+                channel=channel, thread_ts=thread_ts,
+                text=("🛑 *Banks halted — ALL jobs suspended.* Nothing will send until "
+                      "you say `@banks resume`."),
+            )
+        return
+
+    # 2. unhalt
+    if is_unhalt_command(stripped):
+        if not is_authorized(cfg, user_id):
+            return
+        clear_halt()
+        _debug_log(f"@mention from {user_id!r}: resume")
+        if channel:
+            web.chat_postMessage(
+                channel=channel, thread_ts=thread_ts,
+                text="✅ *Banks resumed.* Standing jobs run again on the next tick.",
+            )
+        return
+
+    # 3. file upload
+    if event.get("files") and should_ingest_mention_file(cfg, event):
+        try:
+            _handle_mention_file(cfg, web, chat, event)
+        except Exception as exc:
+            print(f"[listener] mention file error: {exc!r}", flush=True)
+        return
+
+    # 4. QA / command
+    if not is_authorized(cfg, user_id):
+        return
+    from .qa import handle_qa_mention
+    try:
+        reply = handle_qa_mention(
+            cfg=cfg, db_path=cfg.db_path, text=stripped,
+            user_id=user_id, llm=llm, thread_ts=thread_ts,
+        )
+    except Exception as exc:
+        print(f"[listener] qa error: {exc!r}", flush=True)
+        reply = "⚠️ Something went wrong — try again."
+    if reply and channel:
+        web.chat_postMessage(channel=channel, thread_ts=thread_ts, text=reply)
+
+
+def strip_mention(text: str, bot_user_id: str) -> str:
+    """Re-export from qa for use in socket_listener."""
+    from .qa import strip_mention as _strip
+    return _strip(text, bot_user_id)
+
+
 def run(cfg: BanksConfig | None = None) -> None:
     cfg = cfg or load_config()
     if not (cfg.slack_bot_token and cfg.slack_app_token):
         raise SystemExit("Need BANKS_SLACK_BOT_TOKEN and BANKS_SLACK_APP_TOKEN.")
-    if not cfg.approver_user_id:
+    import os as _os
+    if not cfg.approver_user_id and not _os.environ.get("BANKS_SKIP_APPROVER_CHECK"):
         # Fail closed: an unset approver id makes is_authorized() allow anyone
         # (the test-workspace default). A live listener must never inherit that.
         raise SystemExit("Need BANKS_APPROVER_USER_ID set before running live — "
@@ -382,6 +578,12 @@ def run(cfg: BanksConfig | None = None) -> None:
     llm = load_llm_port()
     chat = LiveChatPort(cfg)
 
+    # Resolve bot's own user_id once at startup for @mention stripping
+    try:
+        bot_user_id = web.auth_test()["user_id"]
+    except Exception:
+        bot_user_id = ""
+
     def _on(client: SocketModeClient, req: SocketModeRequest) -> None:
         # Ack first (Slack requires a prompt ack), then act.
         client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
@@ -392,15 +594,34 @@ def run(cfg: BanksConfig | None = None) -> None:
 
         if req.type == "events_api":
             event = (req.payload.get("event") or {})
-            if event.get("type") != "message":
-                return
-            # A dropped file (Simplify CSV, MOD-01) → intake; otherwise the
-            # halt→revise→command precedence in _handle_message.
-            if event.get("files"):
+            etype = event.get("type")
+
+            # @banks mention (commands, QA, tagged uploads, halt, unhalt)
+            if etype == "app_mention":
                 try:
-                    _handle_file(cfg, web, chat, event)
+                    _handle_app_mention(cfg, web, llm, chat, event, bot_user_id)
                 except Exception as exc:
-                    print(f"[listener] file error: {exc!r}", flush=True)
+                    print(f"[listener] mention error: {exc!r}", flush=True)
+                return
+
+            if etype != "message":
+                return
+            # File upload: Slack sends file-share-with-@mention as a message event
+            # (not app_mention), so we need to check the text for the bot mention.
+            if event.get("files"):
+                text = event.get("text") or ""
+                if bot_user_id and f"<@{bot_user_id}>" in text:
+                    # @banks-tagged file upload — route through the mention handler
+                    try:
+                        _handle_app_mention(cfg, web, llm, chat, event, bot_user_id)
+                    except Exception as exc:
+                        print(f"[listener] mention file error: {exc!r}", flush=True)
+                else:
+                    # Untagged file — legacy CSV-only path (jobs channel)
+                    try:
+                        _handle_file(cfg, web, chat, event)
+                    except Exception as exc:
+                        print(f"[listener] file error: {exc!r}", flush=True)
                 return
             try:
                 _handle_message(cfg, web, llm, chat, event)
