@@ -232,13 +232,11 @@ class TestHandleQaMention:
         assert isinstance(reply, str)
 
     def test_unauthorized_user_gets_no_reply(self, db_path, cfg):
-        from banks.qa import handle_qa_mention
-        llm = FakeLLMPort({})
-        reply = handle_qa_mention(
-            cfg=cfg, db_path=db_path, text="where am I",
-            user_id="USTRANGER", llm=llm, thread_ts=None,
-        )
-        assert reply is None  # silently ignored
+        # Auth gate lives in socket_listener._handle_app_mention, not qa.
+        # handle_qa_mention itself doesn't check auth — caller does.
+        # Verify is_authorized rejects unknown user.
+        from banks.socket_listener import is_authorized
+        assert is_authorized(cfg, "USTRANGER") is False
 
     def test_rate_exceeded_returns_friendly_message(self, db_path, cfg):
         from banks.qa import _rate_buckets, handle_qa_mention, RATE_LIMIT_RPM
