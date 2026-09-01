@@ -214,6 +214,58 @@ class TestEmailIntake:
         confirmed, skipped = ingest_email_confirmations(db_path, port, FakeChatPort(), llm)
         assert confirmed == 0  # already confirmed -> skipped, no double count
 
+    def test_does_not_reopen_interviewing(self, db_path):
+        # A late confirmation must NOT overwrite a terminal 'interviewing' status
+        # (that would re-arm cadence follow-ups). PR#11 review issue #2.
+        opp = self._seed(db_path, "acme")
+        with cursor(db_path) as cur:
+            cur.execute("UPDATE opportunities SET status='interviewing' WHERE id=?", (opp,))
+        llm = FakeLLMPort({"acme": '{"confirmed": true, "company": "acme"}'})
+        port = FakeEmailPort([
+            {"subject": "Your application to Acme was received", "body": "",
+             "from": "no-reply@acme.com", "date": ""}])
+        confirmed, skipped = ingest_email_confirmations(db_path, port, FakeChatPort(), llm)
+        assert confirmed == 0
+        with cursor(db_path) as cur:
+            assert cur.execute("SELECT status FROM opportunities WHERE id=?",
+                               (opp,)).fetchone()["status"] == "interviewing"
+
+    def test_does_not_reopen_closed(self, db_path):
+        opp = self._seed(db_path, "acme")
+        with cursor(db_path) as cur:
+            cur.execute("UPDATE opportunities SET status='closed' WHERE id=?", (opp,))
+        llm = FakeLLMPort({"acme": '{"confirmed": true, "company": "acme"}'})
+        port = FakeEmailPort([
+            {"subject": "Your application to Acme was received", "body": "",
+             "from": "no-reply@acme.com", "date": ""}])
+        confirmed, skipped = ingest_email_confirmations(db_path, port, FakeChatPort(), llm)
+        assert confirmed == 0
+        with cursor(db_path) as cur:
+            assert cur.execute("SELECT status FROM opportunities WHERE id=?",
+                               (opp,)).fetchone()["status"] == "closed"
+
+    def test_two_confirmations_one_poll_no_double(self, db_path):
+        # Two confirmation emails for the SAME application in one poll → confirm
+        # once, one funnel event, one receipt. PR#11 review issue #2 (duplicate).
+        opp = self._seed(db_path, "acme")
+        llm = FakeLLMPort({"acme": '{"confirmed": true, "company": "acme"}'})
+        chat = FakeChatPort()
+        port = FakeEmailPort([
+            {"subject": "Your application to Acme was received", "body": "",
+             "from": "no-reply@acme.com", "date": ""},
+            {"subject": "Your application to Acme was received (copy)", "body": "",
+             "from": "no-reply@acme.com", "date": ""}])
+        confirmed, skipped = ingest_email_confirmations(db_path, port, chat, llm)
+        assert confirmed == 1
+        assert skipped == 1
+        # exactly one receipt posted
+        assert len(chat.posts) == 1
+        with cursor(db_path) as cur:
+            n = cur.execute("SELECT COUNT(*) c FROM funnel_events "
+                            "WHERE opportunity_id=? AND event_type='application_confirmed'",
+                            (opp,)).fetchone()["c"]
+        assert n == 1
+
     def test_receipt_has_role_posting_and_email_links(self, db_path):
         record_opportunity(db_path, "Enterprise AE", "simplify", 60, tier="B",
                            company_normalized="acme", status="sourced",

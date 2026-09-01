@@ -35,11 +35,11 @@ _ROUTER_SYSTEM = (
 _LLM_INTENTS = ("whoat", "status", "calllist", "pipeline", "cant_do")
 
 _MENU = (
-    "• `where am I` — a snapshot of your whole pipeline\n"
-    "• `status Acme` — where one company stands\n"
-    "• `who do I know at Acme` — warm intros there\n"
-    "• `call list` — who to reach out to today\n"
-    "• `replied Acme` — stop all follow-ups there"
+    "• `@banks where am I` — a snapshot of your whole pipeline\n"
+    "• `@banks status Acme` — where one company stands\n"
+    "• `@banks who do I know at Acme` — warm intros there\n"
+    "• `@banks call list` — who to reach out to today\n"
+    "• `@banks replied Acme` — stop all follow-ups there"
 )
 _HELP = "Here's what I can pull up for you:\n" + _MENU
 
@@ -87,8 +87,9 @@ def fallback_reply(text: str) -> str:
         return _HELP
     if _GREETING.search(t):
         return "Morning. I'm your job-search command surface — say `help` to see what I do."
-    return ("Not sure what you mean. I handle: `who do I know at <company>`, "
-            "`status <company>`, `call list`, `replied <company>`. Say `help` for more.")
+    return ("Not sure what you mean. I handle: `@banks who do I know at <company>`, "
+            "`@banks status <company>`, `@banks call list`, `@banks replied <company>`. "
+            "Say `@banks help` for more.")
 
 
 def route(db_path: str, text: str, llm=None) -> Command:
@@ -156,7 +157,7 @@ def handle_command(db_path: str, cmd: Command) -> str:
     """Dispatch a routed command to a formatted, human-readable reply."""
     if cmd.intent == "whoat":
         if not cmd.company:
-            return "Which company? Try `who do I know at Acme`."
+            return "Which company? Try `@banks who do I know at Acme`."
         paths = find_referral_paths(db_path, cmd.company)
         if not paths:
             return f"No known contacts at {cmd.company}."
@@ -178,7 +179,7 @@ def handle_command(db_path: str, cmd: Command) -> str:
 
     if cmd.intent == "stop_company":
         if not cmd.company:
-            return "Which company? Try `stop chasing Acme`."
+            return "Which company? Try `@banks stop chasing Acme`."
         from .normalise import normalise_company
         from .governance import record_reply
         n = record_reply(db_path, normalise_company(cmd.company))
@@ -191,12 +192,12 @@ def handle_command(db_path: str, cmd: Command) -> str:
 
     if cmd.intent == "status":
         if not cmd.company:
-            return "Which company? Try `status Acme`."
+            return "Which company? Try `@banks status Acme`."
         return _company_status(db_path, cmd.company)
 
     if cmd.intent == "replied":
         if not cmd.company:
-            return "Which company? Try `replied Acme`."
+            return "Which company? Try `@banks replied Acme`."
         from .normalise import normalise_company
         from .governance import record_reply
         n = record_reply(db_path, normalise_company(cmd.company))
@@ -230,7 +231,7 @@ def _pipeline_summary(db_path: str) -> str:
         f"• Scored & surfaced: {len(surfaced)}  (Tier A {a}, B {b}, C {c})\n"
         f"• Held for enrichment (need comp/industry): {held}\n"
         f"• Companies frozen — you replied, follow-ups stopped: {frozen}\n"
-        f"_Ask `status Acme` for one company, or `call list` for today's outreach._"
+        f"_Ask `@banks status Acme` for one company, or `@banks call list` for today's outreach._"
     )
 
 

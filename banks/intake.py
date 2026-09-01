@@ -207,6 +207,13 @@ _EMAIL_CONFIRM_SYSTEM = (
 )
 
 
+# Statuses a confirmation email must never touch. 'confirmed' avoids
+# double-processing; 'interviewing'/'closed' are terminal for cadence
+# (due_cadence_touches suppresses follow-ups on them) so a late/stray confirmation
+# must not reopen them. Keep in sync with governance.due_cadence_touches.
+_SETTLED_STATUSES = ("confirmed", "interviewing", "closed")
+
+
 def ingest_email_confirmations(
     db_path: str,
     email_port,
@@ -244,8 +251,11 @@ def ingest_email_confirmations(
         blob = f"{subject}\n{frm}\n{body}".lower()
 
         # Narrow: candidate applications whose company name appears in the email.
+        # Exclude any already-settled status (confirmed OR terminal): a late/duplicate
+        # confirmation must never reopen a closed/interviewing opp back to 'confirmed'
+        # (which would re-arm cadence follow-ups). _SETTLED is the guard.
         cands = [k for k in known if k[1] and k[1] in blob]
-        cands = [k for k in cands if k[2] != "confirmed"]  # skip already-confirmed
+        cands = [k for k in cands if k[2] not in _SETTLED_STATUSES]
         if not cands:
             skipped += 1
             continue
@@ -270,10 +280,27 @@ def ingest_email_confirmations(
         matched = next((k for k in cands if k[1] == target), None) or cands[0]
         opp_id, company = matched[0], matched[1]
 
+        # Conditional update: only transition from a non-settled status, and only
+        # act (funnel event + receipt) when THIS statement actually changed a row.
+        # Guards two races: (a) a terminal status slipping through, (b) two
+        # confirmation emails for the same app in one poll — the second finds the
+        # row already 'confirmed' and changes 0 rows, so no duplicate event/receipt.
         with cursor(db_path) as cur:
-            cur.execute("UPDATE opportunities SET status='confirmed' WHERE id=?", (opp_id,))
+            cur.execute(
+                "UPDATE opportunities SET status='confirmed' "
+                "WHERE id=? AND status NOT IN (%s)"
+                % ",".join("?" * len(_SETTLED_STATUSES)),
+                (opp_id, *_SETTLED_STATUSES),
+            )
+            changed = cur.rowcount
             det = cur.execute("SELECT title, source_url FROM opportunities WHERE id=?",
                               (opp_id,)).fetchone()
+        if not changed:
+            skipped += 1  # already settled between snapshot and now — no double count
+            continue
+        # Reflect the new state in the in-poll snapshot so a later message in the
+        # same poll won't re-select this now-confirmed opportunity.
+        known = [(i, c, "confirmed" if i == opp_id else s) for (i, c, s) in known]
         from .governance import record_funnel_event
         record_funnel_event(db_path, opp_id, "application_confirmed")
         print(f"[intake] confirmed application: company={company!r} opp={opp_id}")
@@ -325,8 +352,9 @@ def _post_intake_receipt(chat: "ChatPort", company: str, role: str = "",
     if gm:
         refs.append(f"<{gm}|View the confirmation email>")
     lines.append("*Links:* " + "  ·  ".join(refs))
-    lines.append(f"_Next: `who do I know at {display}` for a warm intro · "
-                 f"`status {display}` to track it._")
+    lines.append(
+        f"*What next?* Ask `@banks who do I know at {display}` to find a warm "
+        f"intro, or `@banks status {display}` to check where it stands.")
     text = "\n".join(lines)
     try:
         chat.post_blocks(text, [

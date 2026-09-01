@@ -11,8 +11,15 @@ Usage (on the server, in the repo, venv active):
     python -m scripts.purge_email_junk              # dry-run: lists what WOULD go
     python -m scripts.purge_email_junk --purge      # actually delete
 
-Targets ONLY rows with source='email_confirmation'. Real opportunities from the
-CSV (source='simplify') and manual JD uploads (source='manual') are untouched.
+Targets ONLY rows that carry BOTH the old junk source AND the old junk title
+placeholder — the exact fingerprint the old create-from-email path stamped on
+every row (`record_opportunity(..., "email_confirmation", ...)` with
+`title="(from forwarded confirmation)"`). Deleting by source ALONE is unsafe
+because a real confirmation the old path happened to ingest would share that
+source; requiring the placeholder title guarantees we only remove rows that never
+carried real role data. Real opportunities from the CSV (source='simplify') and
+manual JD uploads (source='manual') are untouched, and so is any email row that
+somehow has a real title.
 """
 from __future__ import annotations
 
@@ -22,6 +29,7 @@ from banks.config import load_config
 from banks.store import cursor
 
 _JUNK_SOURCE = "email_confirmation"
+_JUNK_TITLE = "(from forwarded confirmation)"
 
 
 def main() -> int:
@@ -32,15 +40,16 @@ def main() -> int:
     with cursor(db_path) as cur:
         rows = cur.execute(
             "SELECT id, title, company_normalized, status FROM opportunities "
-            "WHERE source = ?", (_JUNK_SOURCE,)
+            "WHERE source = ? AND title = ?", (_JUNK_SOURCE, _JUNK_TITLE)
         ).fetchall()
 
     if not rows:
-        print(f"No rows with source='{_JUNK_SOURCE}' — nothing to purge.")
+        print(f"No rows matching source='{_JUNK_SOURCE}' AND title='{_JUNK_TITLE}' "
+              f"— nothing to purge.")
         return 0
 
     print(f"Found {len(rows)} junk opportunit{'y' if len(rows)==1 else 'ies'} "
-          f"(source='{_JUNK_SOURCE}'):")
+          f"(source='{_JUNK_SOURCE}', title='{_JUNK_TITLE}'):")
     for r in rows:
         print(f"  [{r['id']}] {r['company_normalized']!r} — {r['title']!r} "
               f"({r['status']})")
