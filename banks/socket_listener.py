@@ -492,7 +492,8 @@ def _handle_app_mention(cfg: BanksConfig, web, llm, chat, event: dict,
     text = event.get("text") or ""
     user_id = event.get("user", "")
     channel = event.get("channel")
-    thread_ts = event.get("thread_ts") or event.get("ts")
+    # Only thread if already in a thread; top-level @banks → reply in main channel
+    thread_ts = event.get("thread_ts") or None
 
     # Strip the @mention prefix before checking intent
     stripped = strip_mention(text, bot_user_id) if bot_user_id else text.strip()
