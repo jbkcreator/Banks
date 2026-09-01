@@ -215,9 +215,9 @@ def _pipeline_summary(db_path: str) -> str:
             "SELECT tier, needs_enrichment FROM opportunities").fetchall()
         frozen = cur.execute("SELECT COUNT(*) c FROM company_freeze").fetchone()["c"]
     if not rows:
-        return ("No applications tracked yet. Forward a confirmation to your intake "
-                "email, or drop a Simplify export in this channel, and I'll start "
-                "building the pipeline.")
+        return ("No applications tracked yet. Drop a Simplify export here, "
+                "tag me with a JD PDF (@banks + attach), and I'll start building "
+                "the pipeline. Intake email is monitored automatically.")
     total = len(rows)
     held = sum(1 for r in rows if r["needs_enrichment"])
     surfaced = [r for r in rows if not r["needs_enrichment"]]
