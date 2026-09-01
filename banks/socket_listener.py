@@ -442,6 +442,7 @@ def _handle_mention_file(cfg: BanksConfig, web, chat, event: dict) -> None:
         else:
             # PDF / docx / txt → docparse + manual_intake
             from .docparse import TooLittleText, extract_text
+            from .llmport import load_llm_port
             from .manual_intake import ingest_manual
             try:
                 text = extract_text(data, name)
@@ -462,7 +463,8 @@ def _handle_mention_file(cfg: BanksConfig, web, chat, event: dict) -> None:
                     )
                 continue
             try:
-                result = ingest_manual(cfg.db_path, chat, jd_text=text)
+                result = ingest_manual(cfg.db_path, chat, jd_text=text,
+                                       llm=load_llm_port())
                 if channel:
                     web.chat_postMessage(
                         channel=channel, thread_ts=thread_ts,
@@ -615,8 +617,6 @@ def run(cfg: BanksConfig | None = None) -> None:
             # when app_mention is not subscribed or not firing. Check for bot
             # mention in the text and route to _handle_app_mention in both cases.
             text = event.get("text") or ""
-            if event.get("files"):
-                print(f"[listener] file event text={text!r} files={[f.get('name') for f in event.get('files',[])]}", flush=True)
             _is_mention = (
                 (bot_user_id and f"<@{bot_user_id}>" in text)
                 or (not bot_user_id and text.strip().startswith("<@"))
