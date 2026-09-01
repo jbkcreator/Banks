@@ -628,6 +628,10 @@ def run(cfg: BanksConfig | None = None) -> None:
         bot_user_id = ""
         print(f"[listener] WARNING: auth_test failed — bot_user_id unknown: {exc!r}", flush=True)
 
+    # Slack fires both a `message` and an `app_mention` event for the same
+    # @banks file drop. Track processed file IDs to skip the duplicate.
+    _seen_file_ids: set[str] = set()
+
     def _on(client: SocketModeClient, req: SocketModeRequest) -> None:
         # Ack first (Slack requires a prompt ack), then act.
         client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
@@ -642,6 +646,12 @@ def run(cfg: BanksConfig | None = None) -> None:
 
             # @banks mention (commands, QA, tagged uploads, halt, unhalt)
             if etype == "app_mention":
+                # Deduplicate: Slack fires both app_mention + message for the
+                # same @banks file drop. Skip if message path already handled it.
+                fids = {f["id"] for f in event.get("files") or [] if f.get("id")}
+                if fids and fids.issubset(_seen_file_ids):
+                    return
+                _seen_file_ids.update(fids)
                 try:
                     _handle_app_mention(cfg, web, llm, chat, event, bot_user_id)
                 except Exception as exc:
@@ -654,6 +664,8 @@ def run(cfg: BanksConfig | None = None) -> None:
             # when app_mention is not subscribed or not firing. Check for bot
             # mention in the text and route to _handle_app_mention in both cases.
             if _mentions_bot(event, bot_user_id):
+                fids = {f["id"] for f in event.get("files") or [] if f.get("id")}
+                _seen_file_ids.update(fids)
                 try:
                     _handle_app_mention(cfg, web, llm, chat, event, bot_user_id)
                 except Exception as exc:
