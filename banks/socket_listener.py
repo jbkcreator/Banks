@@ -581,8 +581,10 @@ def run(cfg: BanksConfig | None = None) -> None:
     # Resolve bot's own user_id once at startup for @mention stripping
     try:
         bot_user_id = web.auth_test()["user_id"]
-    except Exception:
+        print(f"[listener] bot_user_id={bot_user_id!r}", flush=True)
+    except Exception as exc:
         bot_user_id = ""
+        print(f"[listener] WARNING: auth_test failed — bot_user_id unknown: {exc!r}", flush=True)
 
     def _on(client: SocketModeClient, req: SocketModeRequest) -> None:
         # Ack first (Slack requires a prompt ack), then act.
@@ -610,7 +612,11 @@ def run(cfg: BanksConfig | None = None) -> None:
             # when app_mention is not subscribed or not firing. Check for bot
             # mention in the text and route to _handle_app_mention in both cases.
             text = event.get("text") or ""
-            if bot_user_id and f"<@{bot_user_id}>" in text:
+            _is_mention = (
+                (bot_user_id and f"<@{bot_user_id}>" in text)
+                or (not bot_user_id and text.strip().startswith("<@"))
+            )
+            if _is_mention:
                 try:
                     _handle_app_mention(cfg, web, llm, chat, event, bot_user_id)
                 except Exception as exc:
