@@ -271,14 +271,11 @@ def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
             web.chat_postMessage(channel=channel, text=msg)
         return
 
-    if verdict == "command":  # on-demand retrieval
-        cmd = route(cfg.db_path, text, llm)
-        reply = handle_command(cfg.db_path, cmd)
-        _debug_log(f"msg from {user_id!r}: {text!r} -> intent={cmd.intent!r} "
-                   f"reply={reply!r}")
-        if channel and reply:
-            web.chat_postMessage(channel=channel, text=reply)
-    # verdict == "ignore" → do nothing
+    # verdict == "command" or "ignore" → do nothing.
+    # Untagged messages are silent by design: all Q&A/commands now require an
+    # @banks mention (routed via _handle_app_mention). Only the button-triggered
+    # revision flow (above) and the halt/unhalt safety fallback act untagged.
+    _debug_log(f"msg from {user_id!r}: {text!r} -> ignored (no @banks tag)")
 
 
 # ---------------------------------------------------------------------------
@@ -533,12 +530,25 @@ def _handle_app_mention(cfg: BanksConfig, web, llm, chat, event: dict,
             print(f"[listener] mention file error: {exc!r}", flush=True)
         return
 
-    # 4. QA / command
     if not is_authorized(cfg, user_id):
         print(f"[listener] mention ignored — user {user_id!r} not authorized "
               f"(approver={cfg.approver_user_id!r})", flush=True)
         return
     print(f"[listener] @mention from {user_id!r}: {stripped!r}", flush=True)
+
+    # 4. Deterministic CONTROL commands (mutations) — checked BEFORE the LLM.
+    # These freeze a company / stop follow-ups, so they must never be LLM-executed
+    # (the QA layer is read-only). Only mutating intents are handled here; read
+    # intents fall through to the QA layer's tool-calling.
+    cmd = route(cfg.db_path, stripped, llm)
+    if cmd.intent in ("stop_company", "replied"):
+        reply = handle_command(cfg.db_path, cmd)
+        print(f"[listener] control cmd intent={cmd.intent!r} -> {reply!r}", flush=True)
+        if reply and channel:
+            web.chat_postMessage(channel=channel, thread_ts=thread_ts, text=reply)
+        return
+
+    # 5. QA (read-only LLM tool-calling)
     from .qa import handle_qa_mention
     try:
         reply = handle_qa_mention(
