@@ -606,22 +606,21 @@ def run(cfg: BanksConfig | None = None) -> None:
 
             if etype != "message":
                 return
-            # File upload: Slack sends file-share-with-@mention as a message event
-            # (not app_mention), so we need to check the text for the bot mention.
+            # Slack sends ALL @mention messages (text and file) as message events
+            # when app_mention is not subscribed or not firing. Check for bot
+            # mention in the text and route to _handle_app_mention in both cases.
+            text = event.get("text") or ""
+            if bot_user_id and f"<@{bot_user_id}>" in text:
+                try:
+                    _handle_app_mention(cfg, web, llm, chat, event, bot_user_id)
+                except Exception as exc:
+                    print(f"[listener] mention error: {exc!r}", flush=True)
+                return
             if event.get("files"):
-                text = event.get("text") or ""
-                if bot_user_id and f"<@{bot_user_id}>" in text:
-                    # @banks-tagged file upload — route through the mention handler
-                    try:
-                        _handle_app_mention(cfg, web, llm, chat, event, bot_user_id)
-                    except Exception as exc:
-                        print(f"[listener] mention file error: {exc!r}", flush=True)
-                else:
-                    # Untagged file — legacy CSV-only path (jobs channel)
-                    try:
-                        _handle_file(cfg, web, chat, event)
-                    except Exception as exc:
-                        print(f"[listener] file error: {exc!r}", flush=True)
+                try:
+                    _handle_file(cfg, web, chat, event)
+                except Exception as exc:
+                    print(f"[listener] file error: {exc!r}", flush=True)
                 return
             try:
                 _handle_message(cfg, web, llm, chat, event)
