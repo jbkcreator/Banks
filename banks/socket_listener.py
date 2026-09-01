@@ -37,6 +37,14 @@ from .revisions import (
 _CANCEL_WORDS = {"cancel", "nevermind", "never mind", "stop revising"}
 
 
+def _debug_log(msg: str) -> None:
+    """Print only when BANKS_LISTENER_DEBUG is set. Includes message + reply text,
+    so enabling it puts Slack chat contents in the server log — opt-in by design."""
+    import os
+    if os.environ.get("BANKS_LISTENER_DEBUG"):
+        print(f"[listener] {msg}", flush=True)
+
+
 def is_authorized(cfg: BanksConfig, user_id: str) -> bool:
     """Single-approver lock (Q13): only Josh's id may drive actions.
 
@@ -206,6 +214,7 @@ def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
         if is_bot:
             return
         set_halt(reason=f"operator command: '{text.strip()}'")
+        _debug_log(f"msg from {user_id!r}: {text!r} -> GLOBAL HALT")
         web.chat_postMessage(
             channel=cfg.slack_channel_id or "",
             text=("🛑 *Banks halted — ALL jobs suspended.* Nothing will send until "
@@ -223,6 +232,7 @@ def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
                   f"(approver={cfg.approver_user_id!r})", flush=True)
             return
         clear_halt()
+        _debug_log(f"msg from {user_id!r}: {text!r} -> RESUME (halt cleared)")
         web.chat_postMessage(
             channel=cfg.slack_channel_id or "",
             text="✅ *Banks resumed.* Standing jobs run again on the next tick.",
@@ -262,7 +272,10 @@ def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
         return
 
     if verdict == "command":  # on-demand retrieval
-        reply = handle_command(cfg.db_path, route(cfg.db_path, text, llm))
+        cmd = route(cfg.db_path, text, llm)
+        reply = handle_command(cfg.db_path, cmd)
+        _debug_log(f"msg from {user_id!r}: {text!r} -> intent={cmd.intent!r} "
+                   f"reply={reply!r}")
         if channel and reply:
             web.chat_postMessage(channel=channel, text=reply)
     # verdict == "ignore" → do nothing
