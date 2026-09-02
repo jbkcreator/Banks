@@ -45,13 +45,30 @@ def _weekly_scorecard_blocks(db_path: str) -> list[dict]:
     ]
 
 
+def _already_ran_today(db_path: str, job_name: str) -> bool:
+    """Return True if job_name has a successful run recorded for today (UTC)."""
+    from .store import cursor
+    today = datetime.now(timezone.utc).date().isoformat()
+    with cursor(db_path) as cur:
+        row = cur.execute(
+            "SELECT 1 FROM job_runs WHERE job_name=? AND status='ok' "
+            "AND substr(started_at,1,10)=? LIMIT 1",
+            (job_name, today),
+        ).fetchone()
+    return row is not None
+
+
 def run_job(name: str, db_path: str, chat: ChatPort) -> dict | None:
     """Perform one named job. Returns the post result, or None if no effect yet."""
     check_halt()  # T3-14: every job checks the halt flag before doing any work
     if name == "morning_dashboard":
+        if _already_ran_today(db_path, "morning_dashboard"):
+            return {"skipped": True}
         log_event(db_path, "draft_created", meta={"job": "morning_dashboard"}, minutes_saved=0)
         return chat.post_blocks("Banks — Morning Brief", render_brief_blocks(db_path))
     if name == "weekly_scorecard":
+        if _already_ran_today(db_path, "weekly_scorecard"):
+            return {"skipped": True}
         log_event(db_path, "scorecard_posted", meta={"job": "weekly_scorecard"})
         return chat.post_blocks("Banks — Weekly Scorecard", _weekly_scorecard_blocks(db_path))
     if name == "daily_attack_queue":

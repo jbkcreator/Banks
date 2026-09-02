@@ -676,6 +676,10 @@ def run(cfg: BanksConfig | None = None) -> None:
                     print(f"[listener] mention error: {exc!r}", flush=True)
                 return
             if event.get("files"):
+                key = _event_key(event)
+                if key[1] and key in _seen_events:
+                    return
+                _seen_events.add(key)
                 try:
                     _handle_file(cfg, web, chat, event)
                 except Exception as exc:
@@ -688,6 +692,12 @@ def run(cfg: BanksConfig | None = None) -> None:
             return
 
         if req.type == "interactive":
+            # Dedup on envelope_id — Slack retries interactive payloads on timeout.
+            eid = req.envelope_id or ""
+            if eid and eid in _seen_events:
+                return
+            if eid:
+                _seen_events.add(eid)
             try:
                 _handle_action(cfg, web, req.payload, llm, chat)
             except Exception as exc:  # never let a click die silently
