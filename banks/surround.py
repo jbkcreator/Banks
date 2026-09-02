@@ -45,6 +45,7 @@ def generate_surround_pack(
     cannot roll back a persisted decision, but lane rows always exist before refs
     are set so there are no orphaned rows with missing draft_refs.
     """
+    from .contacts import can_email
     from .lanes import (
         draft_consulting_lane,
         draft_employee_lane,
@@ -141,9 +142,19 @@ def generate_surround_pack(
 
     primary = warm_contacts[0] if warm_contacts else None
 
-    # Lane: Hiring Manager (email if verified, else LinkedIn card)
+    # Lane: Hiring Manager (email if we have an address, else LinkedIn card)
     if primary:
-        has_email = bool(primary.get("verified") and primary.get("email"))
+        # No address on file? Ask Clay for one before deciding the lane, so a
+        # cold contact still gets an email draft rather than defaulting to a
+        # LinkedIn DM. Inert (and instant) unless BANKS_CLAY_EMAIL_ROUTINE_ID
+        # is set; on timeout or miss we fall through to LinkedIn as before.
+        if not can_email(primary):
+            try:
+                from .clay_email import ensure_contact_email
+                primary = ensure_contact_email(db_path, primary)
+            except Exception as exc:      # enrichment must never break a pack
+                print(f"[surround] email enrichment skipped: {exc!r}", flush=True)
+        has_email = can_email(primary)
         if has_email:
             draft = draft_hiring_manager_lane(title, company, primary, career_facts, llm)
             lane_specs.append(("hiring_manager", primary["id"], draft, SendChannel.SENDAS))

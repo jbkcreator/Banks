@@ -59,6 +59,11 @@ class BanksConfig:
     # Google Sheet buffer, which retrieve() polls read-only (no inbound surface —
     # keeps the wall physical). Both blank → LiveClay stays inert (manual CSV path).
     clay_webhook_url: str | None = None
+    # Clay Routine that finds a work email. Clay's public API has no generic
+    # "find work email" endpoint — enrichment runs as a Routine you build in
+    # Clay's UI, then call by id (POST /routines/{id}/run). Unset = Banks skips
+    # email lookup and routes to the LinkedIn DM lane, exactly as before.
+    clay_email_routine_id: str | None = None
     enrichment_sheet_id: str | None = None
     enrichment_sheet_range: str = "Sheet1"
     # LLM key. Banks-namespaced ONLY — never the generic ANTHROPIC_API_KEY, so a
@@ -124,6 +129,7 @@ def load_config() -> BanksConfig:
         timezone=os.environ.get("BANKS_TIMEZONE", "America/New_York"),
         clay_api_key=os.environ.get("BANKS_CLAY_API_KEY"),
         clay_webhook_url=os.environ.get("BANKS_CLAY_WEBHOOK_URL"),
+        clay_email_routine_id=os.environ.get("BANKS_CLAY_EMAIL_ROUTINE_ID"),
         enrichment_sheet_id=os.environ.get("BANKS_ENRICHMENT_SHEET_ID"),
         enrichment_sheet_range=os.environ.get("BANKS_ENRICHMENT_SHEET_RANGE", "Sheet1"),
         anthropic_api_key=os.environ.get("BANKS_ANTHROPIC_API_KEY"),

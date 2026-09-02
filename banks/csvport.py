@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from typing import Protocol
 
 from banks.normalise import normalise_company
@@ -93,6 +94,19 @@ def parse_linkedin_connection_row(row: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Recruiter registry  (confirmed columns from Banks_Recruiter_Registry.csv)
 
+# Recruiter registry Notes often carry the address inline
+# ("Active relationship - intro call Wed 8/26. Email tabitha.francis@lmre.tech").
+# It was only ever stored in `notes`, so the one recruiter Josh has a live
+# relationship with — with a hand-confirmed work address — was invisible to the
+# email lane (found 2026-09-02). Pull it into the email column too.
+_NOTES_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+
+
+def _email_from_notes(notes: str) -> str:
+    m = _NOTES_EMAIL_RE.search(notes or "")
+    return m.group(0).rstrip(".,;") if m else ""
+
+
 def parse_recruiter_row(row: dict) -> dict:
     first = row.get("First Name", "")
     last = row.get("Last Name", "")
@@ -103,6 +117,10 @@ def parse_recruiter_row(row: dict) -> dict:
         "vertical_fit": row.get("Vertical Fit", ""),
         "linkedin_url": row.get("LinkedIn URL", ""),
         "notes": row.get("Notes", ""),
+        # Josh sourced these addresses himself, so they are as trustworthy as a
+        # provider's — verified=1 makes that provenance explicit on the card.
+        "email": row.get("Email", "") or _email_from_notes(row.get("Notes", "")),
+        "verified": 1 if (row.get("Email") or _email_from_notes(row.get("Notes", ""))) else 0,
         "degree": 1,
         "source": "recruiter_registry",
     }

@@ -119,7 +119,13 @@ def _matches_tracked_company(domain: str, subject: str, companies: set[str],
     for slug in companies:
         if not slug or len(slug) < 3:
             continue
-        if slug == domain_root or slug in subject_slug:
+        # Word-boundary match, not a bare substring test: "angi" (a real tracked
+        # company) matched inside "ch-ANGI-ng" in an unrelated newsletter subject
+        # and let it straight through the filter (found live 2026-09-02, same
+        # failure mode as the surname substring bug fixed earlier that day).
+        in_subject = bool(re.search(
+            r"(?<![a-z0-9])" + re.escape(slug) + r"(?![a-z0-9])", subject_slug))
+        if slug == domain_root or in_subject:
             return bool(_JOB_MARKERS.search(blob or subject))
     return False
 

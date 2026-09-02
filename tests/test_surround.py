@@ -31,15 +31,15 @@ def db_path():
     return p
 
 
-def _insert_contact(db_path, company, verified=True):
+def _insert_contact(db_path, company, verified=True, email="jane@acme.com"):
     now = dt.datetime.now(dt.timezone.utc).isoformat()
     with cursor(db_path) as cur:
         cur.execute(
             "INSERT INTO contacts "
             "(name, company, email, linkedin_url, degree, source, verified, added_at) "
-            "VALUES ('Jane Smith', ?, 'jane@acme.com', 'https://linkedin.com/in/jane', "
+            "VALUES ('Jane Smith', ?, ?, 'https://linkedin.com/in/jane', "
             "1, 'linkedin_csv', ?, ?)",
-            (company, 1 if verified else 0, now),
+            (company, email, 1 if verified else 0, now),
         )
         return cur.lastrowid
 
@@ -85,13 +85,25 @@ def test_verified_contact_uses_hiring_manager_lane(db_path):
     assert "linkedin" not in types
 
 
-def test_unverified_contact_uses_linkedin_lane(db_path):
-    cid = _insert_contact(db_path, "Acme", verified=False)
+def test_contact_with_no_email_uses_linkedin_lane(db_path):
+    """No usable address -> LinkedIn DM. This is the fallback, not a punishment."""
+    cid = _insert_contact(db_path, "Acme", verified=False, email="")
     opp_id = _make_opp(db_path, tier="A", contact_id=cid)
     pack = generate_surround_pack(db_path, opp_id, FACTS, FakeChatPort())
     types = [l["type"] for l in pack.lanes]
     assert "linkedin" in types
     assert "hiring_manager" not in types
+
+
+def test_unverified_contact_with_an_email_still_gets_the_email_lane(db_path):
+    """Policy change 2026-09-02: routing gates on having an address, not on the
+    `verified` flag. Only provider enrichment ever set verified=1, so requiring
+    it sent all 1,694 of Josh's contacts down the LinkedIn lane — including the
+    17 who had a perfectly good address."""
+    cid = _insert_contact(db_path, "Acme", verified=False, email="jane@acme.com")
+    opp_id = _make_opp(db_path, tier="A", contact_id=cid)
+    pack = generate_surround_pack(db_path, opp_id, FACTS, FakeChatPort())
+    assert "hiring_manager" in [l["type"] for l in pack.lanes]
 
 
 def test_empty_facts_raises(db_path):

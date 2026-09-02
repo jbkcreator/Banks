@@ -10,6 +10,7 @@ in the last 48 hours, Banks must surface the collision rather than flood.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 
@@ -119,3 +120,29 @@ def check_contact_discipline(db_path: str, to_addr: str | None,
             f"Draft blocked: {addr!r} was already contacted within "
             f"{TOUCH_WINDOW_HOURS}h. Surface the collision to Josh."
         )
+
+# ---------------------------------------------------------------------------
+# Email eligibility — the single answer to "can this contact be emailed?"
+# ---------------------------------------------------------------------------
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s.]+\.[^@\s]+$")
+
+
+def can_email(contact: dict | None) -> bool:
+    """True when Banks holds a syntactically usable address for this contact.
+
+    Gate policy (2026-09-02): presence of a real address, NOT the `verified`
+    flag. Previously this required `verified AND email`, and since only the
+    provider-enrichment path ever sets verified=1, every one of Josh's 1,694
+    contacts routed to a LinkedIn DM — including the 17 who had a perfectly
+    good address sitting in the column.
+
+    Safety does not rest on this predicate: Josh approves every send, the MOD-06
+    exclusion gate re-checks at send time, and the 40/day cap and 14-day spacing
+    still apply. `verified` remains meaningful as provenance (a provider vouched
+    for it) and is surfaced on the card, but it is not a routing veto.
+    """
+    if not contact:
+        return False
+    email = (contact.get("email") or "").strip()
+    return bool(email) and bool(_EMAIL_RE.match(email))

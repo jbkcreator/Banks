@@ -240,3 +240,21 @@ def test_no_writes_to_db(db):
     recent_job_mail(db, FakeEmailPort([], recent=[
         _msg("no-reply@greenhouse.io", "Application received — Evolve")]), days=14)
     assert counts() == before
+
+
+def test_company_slug_substring_inside_an_unrelated_word_is_dropped():
+    """'angi' (a real tracked company) matched inside 'ch-ANGI-ng' in an
+    unrelated newsletter subject and let it through the filter live on
+    2026-09-02 — same failure mode as the surname substring bug, different
+    field. Word-boundary match closes both."""
+    assert not is_job_related(
+        _msg("Podfest Messenger <podfest-messenger@mail.beehiiv.com>",
+             "YouTube Is Changing What Counts as a View", "creator economy news"),
+        {"angi", "evolve"}, set())
+
+
+def test_company_slug_as_a_whole_word_still_matches():
+    assert is_job_related(
+        _msg("someone@random.com", "Update on your Angi application",
+             "we reviewed your application"),
+        {"angi", "evolve"}, set())

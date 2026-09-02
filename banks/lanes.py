@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .enforcement import Draft
+from .contacts import can_email
 from .opportunity import CareerFacts
 
 if TYPE_CHECKING:
@@ -133,7 +134,7 @@ def draft_employee_lane(
 ) -> Draft:
     _require_facts(facts)
     name = contact.get("name") or "there"
-    has_email = bool(contact.get("verified") and contact.get("email"))
+    has_email = can_email(contact)
     action_line = "" if has_email else f"\n{_linkedin_action_line(contact)}"
     body = (
         f"Hi {name},\n\n"

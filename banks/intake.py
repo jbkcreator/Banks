@@ -433,12 +433,14 @@ def ingest_contacts(
             cur.execute(
                 "INSERT INTO contacts "
                 "(name, company, email, linkedin_url, degree, source, "
-                " title, vertical_fit, notes, position, added_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " title, vertical_fit, notes, position, verified, added_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (c.get("name", ""), c.get("company", ""), c.get("email", ""),
                  linkedin_url, c.get("degree", 1), c["source"],
                  c.get("title"), c.get("vertical_fit"), c.get("notes"),
-                 c.get("position"), now),
+                 # verified was silently dropped here, so a hand-confirmed
+                 # recruiter address landed as unverified (found 2026-09-02).
+                 c.get("position"), int(c.get("verified") or 0), now),
             )
         inserted += 1
     return inserted, merged

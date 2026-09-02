@@ -191,8 +191,12 @@ def test_raw_http_client_isolated_to_the_sender():
     # enrich.py: LiveFetchPort reads job postings (read-only GET).
     # contact_enrichment.py: LiveClayEnrichmentPort (paid Clay, inert until upgraded).
     # slackfiles.py: authed download of a url_private Slack file (CSV upload).
+    # clay_email.py: Clay Routines API (work-email lookup). Read-only outbound
+    # POST/GET to api.clay.com; holds no send credential and never transmits to
+    # a contact — only Relay/mailer.py can do that.
     allowed = {"mailer.py", "fileport.py", "llmport.py",
-               "enrich.py", "contact_enrichment.py", "slackfiles.py"}
+               "enrich.py", "contact_enrichment.py", "slackfiles.py",
+               "clay_email.py"}
     offenders = []
     for path in _all_py_files(BANKS_PKG):
         if path.name in allowed:
