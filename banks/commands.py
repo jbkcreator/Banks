@@ -12,34 +12,52 @@ become an open-ended conversational agent (explicitly out of scope).
 """
 from __future__ import annotations
 
+import difflib
 import re
 import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import date
 
+from .clock import today_local_iso
 from .governance import network_activation_due
 from .store import cursor
 from .warmpath import describe_contact, find_referral_paths
 
 _ROUTER_SYSTEM = (
-    "You classify a Slack message into one job-search retrieval intent, or none. "
+    "You classify a Slack message into one job-search intent, or none. "
     "Return JSON only: "
-    '{"intent": "whoat|status|calllist|pipeline|cant_do|none", "company": "<name or null>"}. '
+    '{"intent": "whoat|status|calllist|pipeline|cant_do|stop_company|replied|none", '
+    '"company": "<name or null>"}. '
     "whoat = who does the user know at a company; status = pipeline status of ONE "
     "company; calllist = who to reach out to today; pipeline = an overall snapshot "
     "of where they stand across all applications ('where am I', 'how's my search'); "
-    "cant_do = asking Banks to read their live inbox or browse LinkedIn/Gmail "
-    "(which it cannot do). Otherwise none. No other intents exist."
+    "cant_do = asking Banks to browse LinkedIn or act outside its read-only "
+    "job-search scope (which it cannot do); "
+    "stop_company = the user wants to STOP pursuing / chasing / following up with ONE "
+    "company, however softly phrased ('I don\'t want to keep chasing Acme', 'put a pin "
+    "in Acme', 'drop them', 'Acme ghosted me, forget it'); "
+    "replied = the user is telling you a company or its recruiter GOT BACK TO THEM / "
+    "answered / responded, however narratively phrased ('the Acme recruiter finally "
+    "replied', 'heard from Acme at last'). "
+    "For stop_company and replied you MUST return the company name; if the message only "
+    "says 'them'/'they'/'it' with no company named, return intent none. "
+    "Otherwise none. No other intents exist."
 )
+# Read-only intents the LLM may resolve straight to an answer.
 _LLM_INTENTS = ("whoat", "status", "calllist", "pipeline", "cant_do")
+# Mutating intents the LLM may only PROPOSE — see Command.source and the
+# confirm-before-freeze path in socket_listener._handle_app_mention. A freeze has
+# no un-freeze command, so an LLM guess must never write one unattended.
+_LLM_MUTATION_INTENTS = ("stop_company", "replied")
 
 _MENU = (
     "• `@banks where am I` — a snapshot of your whole pipeline\n"
     "• `@banks status Acme` — where one company stands\n"
     "• `@banks who do I know at Acme` — warm intros there\n"
     "• `@banks call list` — who to reach out to today\n"
-    "• `@banks replied Acme` — stop all follow-ups there"
+    "• `@banks replied Acme` — stop all follow-ups there\n"
+    "• `@banks anything come in?` — job-search email from the last 14 days"
 )
 _HELP = "Here's what I can pull up for you:\n" + _MENU
 
@@ -49,6 +67,7 @@ class Command:
     intent: str            # whoat | status | calllist | replied | none
     company: str | None = None
     raw: str = ""          # original text, so the `none` fallback can be context-aware
+    source: str = "keyword"  # "keyword" (deterministic regex) | "llm" (classified)
 
 
 # Things Josh may expect a general chat-bot to do that Banks deliberately cannot —
@@ -58,9 +77,8 @@ _CANT_DO = re.compile(
     # includes common misspellings (linkdin/linkedn/gmial) — keyword matching is
     # brittle to typos, and full NL understanding is out of scope (see the client
     # scope doc §3: "advanced conversational Slack commands" are deferred).
-    r"\b(linked ?in|linkd?in|linkedn|linkedln|lnkedin|gmail|gmial|inbox|e-?mail|"
-    r"browse|scrape|log ?in|read my|see my|look (?:through|at) my|check my|"
-    r"go through my)\b", re.IGNORECASE,
+    r"\b(linked ?in|linkd?in|linkedn|linkedln|lnkedin|"
+    r"browse|scrape|log ?in)\b", re.IGNORECASE,
 )
 _GREETING = re.compile(r"^\s*(hi|hey|hello|yo|good\s+(morning|afternoon|evening)|gm)\b",
                        re.IGNORECASE)
@@ -69,8 +87,9 @@ _ASKED_HELP = re.compile(r"\b(help|what can you|what do you|commands?|options?)\
 
 _CANT_DO_REPLY = (
     "Here's what I can pull up for you:\n" + _MENU +
-    "\n\n_(I can't read your live inbox or browse LinkedIn/Gmail — that's the hard "
-    "wall by design; I only see application confirmations you forward me.)_"
+    "\n\n_(I read your inbox for job-search mail only — replies from companies you "
+    "applied to, recruiters, and job boards, going back 14 days. I don't see the "
+    "rest of your mail, and I can't browse LinkedIn.)_"
 )
 
 
@@ -141,11 +160,20 @@ def route(db_path: str, text: str, llm=None) -> Command:
         try:
             data = llm.extract_json(
                 _ROUTER_SYSTEM, t,
-                schema_hint='{"intent":"whoat|status|calllist|pipeline|cant_do|none","company":"str|null"}',
+                schema_hint='{"intent":"whoat|status|calllist|pipeline|cant_do|'
+                            'stop_company|replied|none","company":"str|null"}',
             )
             intent = data.get("intent", "none")
-            if intent in _LLM_INTENTS:
+            if intent in _LLM_INTENTS or intent in _LLM_MUTATION_INTENTS:
                 company = _clean_company(data.get("company")) if data.get("company") else None
+                # A mutation the LLM inferred from soft phrasing needs a named
+                # company AND Josh's confirmation (source="llm" → _apply_freeze
+                # proposes instead of writing). Without a company it is not
+                # actionable at all, so fall through to `none`.
+                if intent in _LLM_MUTATION_INTENTS:
+                    if not company or is_pronoun_reference(company):
+                        return Command("none", raw=t)
+                    return Command(intent, company, raw=t, source="llm")
                 return Command(intent, company, raw=t)
         except Exception:
             pass
@@ -158,14 +186,10 @@ def handle_command(db_path: str, cmd: Command) -> str:
     if cmd.intent == "whoat":
         if not cmd.company:
             return "Which company? Try `@banks who do I know at Acme`."
-        paths = find_referral_paths(db_path, cmd.company)
-        if not paths:
-            return f"No known contacts at {cmd.company}."
-        head = f"Who you know at {cmd.company}:"
-        return head + "\n" + "\n".join(f"• {describe_contact(c)}" for c in paths)
+        return who_do_i_know_text(db_path, cmd.company)
 
     if cmd.intent == "calllist":
-        contacts = network_activation_due(db_path, date.today().isoformat(), limit=5)
+        contacts = network_activation_due(db_path, today_local_iso(), limit=5)
         if not contacts:
             return "Nobody's due — everyone's been touched in the last 14 days."
         lines = []
@@ -178,14 +202,7 @@ def handle_command(db_path: str, cmd: Command) -> str:
         return _CANT_DO_REPLY
 
     if cmd.intent == "stop_company":
-        if not cmd.company:
-            return "Which company? Try `@banks stop chasing Acme`."
-        from .normalise import normalise_company
-        from .governance import record_reply
-        n = record_reply(db_path, normalise_company(cmd.company))
-        return (f"🧊 Stopped chasing *{cmd.company}* — all follow-ups there frozen "
-                f"({n} opportunit{'y' if n == 1 else 'ies'}). "
-                f"Everything else is still running.")
+        return _apply_freeze(db_path, cmd, "stop_company")
 
     if cmd.intent == "pipeline":
         return _pipeline_summary(db_path)
@@ -196,16 +213,81 @@ def handle_command(db_path: str, cmd: Command) -> str:
         return _company_status(db_path, cmd.company)
 
     if cmd.intent == "replied":
-        if not cmd.company:
-            return "Which company? Try `@banks replied Acme`."
-        from .normalise import normalise_company
-        from .governance import record_reply
-        n = record_reply(db_path, normalise_company(cmd.company))
-        return (f"🧊 Froze {cmd.company} — reply logged. All pending follow-ups there "
-                f"stopped ({n} opportunit{'y' if n == 1 else 'ies'}). No one who replied "
-                f"will be chased.")
+        return _apply_freeze(db_path, cmd, "replied")
 
     return fallback_reply(cmd.raw)
+
+
+def who_do_i_know_text(db_path: str, company: str) -> str:
+    """Warm contacts at a company. Typo-tolerant — shared by the command router
+    and the QA layer's who_do_i_know tool so both behave identically."""
+    slug, note = _resolve_for_read(db_path, company,
+                                   "@banks who do I know at {c}")
+    if slug is None and note:
+        return note
+    target = slug or company
+    paths = find_referral_paths(db_path, target)
+    if not paths:
+        return f"No known contacts at {target}."
+    head = f"{note}Who you know at {target}:"
+    return head + "\n" + "\n".join(f"• {describe_contact(c)}" for c in paths)
+
+
+def _apply_freeze(db_path: str, cmd: Command, kind: str) -> str:
+    """Shared gate + write for the two freezing intents (stop_company/replied).
+
+    Three gates run BEFORE anything is written:
+      1. a company must be named — never a bare pronoun ("stop chasing them"
+         froze a company literally called "them");
+      2. it must resolve EXACTLY to a company Banks tracks — otherwise the write
+         is junk and the reply tells Josh his follow-ups stopped when they did
+         not (this is what happened live on 2026-09-02 with the row
+         "evolve — stop chasing them", while `evolve` itself kept running);
+      3. a soft, LLM-classified phrasing is CONFIRMED, not applied — a freeze has
+         no un-freeze command, and the build's spine is propose-then-approve.
+    """
+    template = ("@banks stop chasing {c}" if kind == "stop_company"
+                else "@banks replied {c}")
+    if not cmd.company:
+        return f"Which company? Try `{template.format(c='Acme')}`."
+
+    match = resolve_company(db_path, cmd.company)
+    if not match.exact:
+        return _did_you_mean(match, cmd.company, template)
+
+    if cmd.source == "llm":
+        verb = ("stop chasing" if kind == "stop_company"
+                else "log a reply from and freeze")
+        return (f"Just to confirm — want me to {verb} *{match.slug}*, stopping all "
+                f"follow-ups there? Send `{template.format(c=match.slug)}` and it's "
+                f"done. _(Nothing has changed yet.)_")
+
+    from .governance import record_reply
+    n = record_reply(db_path, match.slug)
+    opps = f"{n} opportunit{'y' if n == 1 else 'ies'}"
+    if kind == "stop_company":
+        return (f"🧊 Stopped chasing *{match.slug}* — all follow-ups there frozen "
+                f"({opps}). Everything else is still running.")
+    return (f"🧊 Froze *{match.slug}* — reply logged. All pending follow-ups there "
+            f"stopped ({opps}). No one who replied will be chased.")
+
+
+def _resolve_for_read(db_path: str, typed: str, template: str):
+    """Resolve a company for a READ. Returns (slug_or_None, note_or_message).
+
+    Reads are safe to act on a single close match (with a visible note); a wrong
+    read costs nothing, whereas dead-ending on a one-letter typo is the bug.
+    """
+    match = resolve_company(db_path, typed)
+    if match.exact:
+        return match.slug, ""
+    if match.pronoun:
+        return None, _did_you_mean(match, typed, template)
+    if len(match.suggestions) == 1:
+        return match.suggestions[0], f"_(reading that as *{match.suggestions[0]}*)_\n"
+    if match.suggestions:
+        return None, _did_you_mean(match, typed, template)
+    return None, ""      # nothing close — caller emits its own "not tracked"
 
 
 def _pipeline_summary(db_path: str) -> str:
@@ -238,7 +320,10 @@ def _pipeline_summary(db_path: str) -> str:
 def _company_status(db_path: str, company: str) -> str:
     """Pipeline snapshot — pure read: tier, lanes, warm-intro, cadence, freeze, contacts."""
     from .normalise import normalise_company
-    slug = normalise_company(company) or company.lower()
+    slug, note = _resolve_for_read(db_path, company, "@banks status {c}")
+    if slug is None and note:
+        return note
+    slug = slug or normalise_company(company) or company.lower()
 
     with cursor(db_path) as cur:
         opp = cur.execute(
@@ -271,7 +356,7 @@ def _company_status(db_path: str, company: str) -> str:
         ).fetchall()
 
     parts = [
-        f"*{opp['title']}* — Tier {opp['tier']}"
+        f"{note}*{opp['title']}* — Tier {opp['tier']}"
         + (f" · {opp['pursuit_mode']}" if opp["pursuit_mode"] else "")
         + f" · {opp['status']}"
     ]
@@ -293,10 +378,125 @@ def _company_status(db_path: str, company: str) -> str:
     return "\n".join(parts)
 
 
+# Pronouns a human uses for "the company we were just talking about". Banks holds
+# no conversation state, so these can never be resolved — they must ASK, never
+# guess and never freeze. ("ok stop chasing them" once froze a company literally
+# named "them".)
+_PRONOUNS = {
+    "them", "they", "it", "that", "this", "those", "these", "him", "her",
+    "that one", "this one", "the first one", "the second one", "the last one",
+    "there", "the other one",
+}
+
+# Greedy `(.+)` captures swallow whatever trails the company name. Cut at the
+# first clause boundary so "replied Evolve — stop chasing them" resolves to
+# "evolve", not to a company called "evolve — stop chasing them" (which is
+# exactly what landed in the live DB on 2026-09-02).
+_CLAUSE_BREAK = re.compile(r"\s+[—–]\s*|\s+-\s+|[,;:]")
+_LEADING_FILLER = re.compile(
+    r"^(?:the|with|on|at|about|to|for|from|any|an?)\s+", re.IGNORECASE)
+_TRAILING_FILLER = re.compile(
+    r"\s+(?:for now|for the moment|anymore|any more|any longer|please|thanks|"
+    r"thank you|too|as well|ok|okay|yet|already|finally)$", re.IGNORECASE)
+
+
 def _clean_company(raw: str | None) -> str | None:
     if not raw:
         return None
-    return re.sub(r"[?.!,]+$", "", raw.strip()).strip()
+    s = _CLAUSE_BREAK.split(raw.strip(), maxsplit=1)[0]
+    s = re.sub(r"[?.!,]+$", "", s.strip()).strip()
+    s = _LEADING_FILLER.sub("", s).strip()
+    prev = None
+    while prev != s:                      # "Acme for now please" -> "Acme"
+        prev = s
+        s = _TRAILING_FILLER.sub("", s).strip()
+    s = re.sub(r"[?.!,]+$", "", s).strip()
+    return s or None
+
+
+def is_pronoun_reference(name: str | None) -> bool:
+    """True when the 'company' is really a back-reference to an earlier turn."""
+    return bool(name) and name.strip().lower() in _PRONOUNS
+
+
+# ---------------------------------------------------------------------------
+# Company resolution (typo tolerance + the anti-garbage guard on freezes)
+# ---------------------------------------------------------------------------
+
+_FUZZY_CUTOFF = 0.80
+
+
+@dataclass(frozen=True)
+class CompanyMatch:
+    """Result of resolving a user-typed company name against tracked companies.
+
+    exact=True means the slug is a company Banks actually tracks — the ONLY case
+    in which a mutation (freeze) is allowed to write.
+    """
+    slug: str | None                       # resolved tracked slug, else None
+    exact: bool = False
+    suggestions: tuple[str, ...] = ()      # close matches when exact misses
+    pronoun: bool = False
+
+
+def known_companies(db_path: str) -> list[str]:
+    """Every company slug Banks tracks — opportunities first, then contacts."""
+    with cursor(db_path) as cur:
+        rows = cur.execute(
+            "SELECT DISTINCT company_normalized AS c FROM opportunities "
+            "WHERE company_normalized IS NOT NULL AND company_normalized != '' "
+            "UNION "
+            "SELECT DISTINCT company AS c FROM contacts "
+            "WHERE company IS NOT NULL AND company != ''"
+        ).fetchall()
+    return [r["c"] for r in rows]
+
+
+def resolve_company(db_path: str, raw: str | None) -> CompanyMatch:
+    """Resolve a typed company name to a tracked slug, tolerating typos.
+
+    Exact normalised hit wins. Otherwise fall back to fuzzy + substring matching
+    so "Ripling" finds "rippling" instead of dead-ending. A fuzzy hit is returned
+    as a *suggestion*, never as an exact match: reads may act on it with a note,
+    mutations must confirm first (a freeze has no undo).
+    """
+    from .normalise import normalise_company
+
+    if not raw:
+        return CompanyMatch(None)
+    if is_pronoun_reference(raw):
+        return CompanyMatch(None, pronoun=True)
+
+    slug = normalise_company(raw)
+    if not slug:
+        return CompanyMatch(None)
+
+    names = known_companies(db_path)
+    if slug in names:
+        return CompanyMatch(slug, exact=True)
+
+    # Substring both ways catches "appfolio inc" / "folio" style near-misses that
+    # difflib ratio alone scores too low.
+    subs = [n for n in names if slug in n or n in slug]
+    fuzzy = difflib.get_close_matches(slug, names, n=3, cutoff=_FUZZY_CUTOFF)
+    seen: list[str] = []
+    for n in fuzzy + subs:
+        if n not in seen:
+            seen.append(n)
+    return CompanyMatch(None, suggestions=tuple(seen[:3]))
+
+
+def _did_you_mean(match: CompanyMatch, typed: str, template: str) -> str:
+    """Shared 'I couldn't resolve that company' reply. `template` is a command
+    example with {c} where the company goes."""
+    if match.pronoun:
+        return (f"Which company? `{typed}` doesn't tell me who you mean on its "
+                f"own — name it, e.g. `{template.format(c='Acme')}`.")
+    if match.suggestions:
+        opts = " or ".join(f"`{template.format(c=s)}`" for s in match.suggestions)
+        return f"I don't track *{typed}*. Did you mean {opts}?"
+    return (f"I don't track a company called *{typed}*, so there's nothing to "
+            f"change. Check the name with `@banks where am I`.")
 
 
 # ---------------------------------------------------------------------------

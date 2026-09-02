@@ -85,10 +85,18 @@ def approve_intent(db_path: str, draft_ref: DraftRef | str) -> bool:
 
 
 def suppress_intent(db_path: str, draft_ref: DraftRef | str) -> None:
-    """Manual 'Mark sent' — Josh sent it himself; Relay must never fire (R-D4)."""
+    """Manual 'Mark sent' / Reject — Josh handled it; Relay must never fire (R-D4).
+
+    Never downgrades a completed send. The card keeps its buttons after Relay
+    runs, so a late Reject tap used to overwrite status='sent' with
+    'suppressed' — the record then claimed nothing went out when an email
+    already had (fixed 2026-09-02). 'sent' is terminal; suppression is only
+    meaningful while something is still pending.
+    """
     with cursor(db_path) as cur:
         cur.execute(
-            "UPDATE send_intents SET status='suppressed' WHERE draft_ref=?",
+            "UPDATE send_intents SET status='suppressed' "
+            "WHERE draft_ref=? AND status != 'sent'",
             (str(DraftRef.parse(draft_ref)),),
         )
 
@@ -159,13 +167,14 @@ def relay_run(db_path: str, mailer: Mailer, from_addr: str = DEFAULT_FROM) -> Re
       4. 14-day per-contact spacing.
     After a successful send: mark_lane_sent, queue_cadence, record_funnel_event.
     """
-    from datetime import date
-
+    from .clock import today_local_iso
     from .governance import (check_14day_spacing, check_and_increment,
                              mark_lane_sent, queue_cadence, record_funnel_event)
 
     check_halt()  # a halted Banks must never send — freeze, don't transmit.
-    today = date.today().isoformat()
+    # Josh's date, not the server's. On a UTC box date.today() rolls at 20:00 ET,
+    # so the 40/20 daily caps reset mid-evening and he could send 80 in a night.
+    today = today_local_iso()
     sent, skipped, failed, blocked = [], [], [], []
     with cursor(db_path) as cur:
         rows = [dict(r) for r in cur.execute(

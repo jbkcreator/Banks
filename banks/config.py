@@ -34,10 +34,18 @@ class BanksConfig:
     # App-level token (xapp-) for Socket Mode — receives button clicks over an
     # outbound WebSocket, no public endpoint. Distinct from the bot token.
     slack_app_token: str | None = None
-    # Single-approver lock (MOD-05): only this Slack user id may drive actions
-    # (Approve triggers a real Relay send — that authority is Josh's alone).
-    # None = allow any user (test workspaces, where Lesly is the only member).
+    # Approver lock (MOD-05): only these Slack user ids may drive actions
+    # (Approve triggers a real Relay send, so this is a real authority grant).
+    # Accepts a comma-separated list — Josh plus whoever operates Banks with him.
+    # None/empty = allow any user (test workspaces with a single member).
+    # Read it through `approver_ids`, never by comparing this string directly.
     approver_user_id: str | None = None
+
+    @property
+    def approver_ids(self) -> tuple[str, ...]:
+        """Every Slack user id allowed to drive actions ('U1, U2' -> ('U1','U2'))."""
+        raw = self.approver_user_id or ""
+        return tuple(p.strip() for p in raw.split(",") if p.strip())
     timezone: str = "America/New_York"
     # Josh's own address — where detailed-financial drafts are emailed in full
     # (Slack only ever carries the redacted summary).
@@ -102,7 +110,12 @@ def load_config() -> BanksConfig:
     return BanksConfig(
         slack_bot_token=os.environ.get("BANKS_SLACK_BOT_TOKEN"),
         slack_channel_id=os.environ.get("BANKS_CHANNEL_ID"),
-        slack_jobs_channel_id=os.environ.get("BANKS_JOBS_CHANNEL_ID", "C0BNGMYHFEF"),
+        # No default: this used to fall back to a hard-coded TEST-workspace
+        # channel id, so a production .env that omitted the var pointed the
+        # upload gate at a channel in another workspace and silently dropped
+        # every CSV/JD file (found 2026-09-02). None makes the gate closed and
+        # obvious instead of open to the wrong place.
+        slack_jobs_channel_id=os.environ.get("BANKS_JOBS_CHANNEL_ID"),
         slack_app_token=os.environ.get("BANKS_SLACK_APP_TOKEN"),
         approver_user_id=os.environ.get("BANKS_APPROVER_USER_ID"),
         josh_email=os.environ.get("BANKS_JOSH_EMAIL"),

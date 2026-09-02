@@ -1,19 +1,35 @@
 """Kill command — halt flag that every job checks at entry (Phase I T3-14).
 
-Josh sends "STOP ALL" or "STOP Banks" in #banks. Socket listener calls
+Josh sends "STOP ALL" or "STOP Banks" in #banks. The socket listener calls
 set_halt(). Every job entry point calls check_halt() before doing any work —
 halts within one cycle.
 
-The flag is in-process (not persisted) so a restart clears it. This is
-intentional: a restart is a deliberate resumption, not an accidental bypass.
+THE FLAG IS PERSISTED IN THE DB, and that is load-bearing. Banks runs as two
+processes (banks-listener for buttons/messages, banks-scheduler for standing
+jobs including relay_dispatch every 5 min). The flag used to be a module global,
+which meant Josh's "stop all" set it in the *listener* while the *scheduler*
+kept sending — the kill switch acknowledged the halt and stopped nothing
+(found 2026-09-02). A shared row is the only thing both processes can see.
+
+It also survives restart, deliberately: a deploy or a crash must not silently
+resume outreach Josh stopped. Only "@banks resume" clears it.
+
+`init_halt(db_path)` is called once at startup by container/run/listener. Until
+then the module falls back to an in-process flag so tests and CLI tools that
+never touch a DB still behave.
 """
 
 from __future__ import annotations
 
 import re
 import threading
+from datetime import datetime, timezone
+
+from .store import cursor
 
 _lock = threading.Lock()
+_db_path: str | None = None
+# Fallback for callers that never called init_halt() (tests, one-shot scripts).
 _halted: bool = False
 _halt_reason: str = ""
 
@@ -47,33 +63,83 @@ class BanksHalted(RuntimeError):
     """Raised by check_halt() when the halt flag is set."""
 
 
+def init_halt(db_path: str | None) -> None:
+    """Point the kill switch at the shared DB. Called once at process startup.
+
+    Without this the flag is per-process and the switch cannot cross the
+    listener/scheduler boundary — the exact defect this module was rewritten to
+    remove — so production entry points MUST call it.
+    """
+    global _db_path
+    with _lock:
+        _db_path = db_path
+
+
+def _read_state() -> tuple[bool, str]:
+    if _db_path is None:
+        return _halted, _halt_reason
+    try:
+        with cursor(_db_path) as cur:
+            row = cur.execute(
+                "SELECT halted, reason FROM halt_state WHERE id = 1").fetchone()
+    except Exception as exc:
+        # Fail SAFE: if the flag can't be read we cannot prove Banks is allowed
+        # to send, so treat it as halted rather than transmitting on a guess.
+        return True, f"halt state unreadable ({exc})"
+    if row is None:
+        return False, ""
+    return bool(row["halted"]), (row["reason"] or "")
+
+
 def set_halt(reason: str = "operator command") -> None:
     global _halted, _halt_reason
     with _lock:
-        _halted = True
-        _halt_reason = reason
+        _halted, _halt_reason = True, reason
+        if _db_path is None:
+            return
+        with cursor(_db_path) as cur:
+            cur.execute(
+                "INSERT INTO halt_state (id, halted, reason, set_at) "
+                "VALUES (1, 1, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+                "halted = 1, reason = excluded.reason, set_at = excluded.set_at",
+                (reason, datetime.now(timezone.utc).isoformat()),
+            )
 
 
 def clear_halt() -> None:
-    """Reset the halt flag (used by tests and on restart)."""
+    """Lift the halt. Only "@banks resume" (approver-gated) should call this —
+    a restart must NOT, or outreach Josh stopped resumes behind his back."""
     global _halted, _halt_reason
     with _lock:
-        _halted = False
-        _halt_reason = ""
+        _halted, _halt_reason = False, ""
+        if _db_path is None:
+            return
+        with cursor(_db_path) as cur:
+            cur.execute(
+                "INSERT INTO halt_state (id, halted, reason, set_at) "
+                "VALUES (1, 0, '', ?) ON CONFLICT(id) DO UPDATE SET "
+                "halted = 0, reason = '', set_at = excluded.set_at",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
 
 
 def is_halted() -> bool:
     with _lock:
-        return _halted
+        return _read_state()[0]
+
+
+def halt_reason() -> str:
+    with _lock:
+        return _read_state()[1]
 
 
 def check_halt() -> None:
     """Call at the top of every job. Raises BanksHalted if the flag is set."""
     with _lock:
-        if _halted:
+        halted, reason = _read_state()
+        if halted:
             raise BanksHalted(
-                f"Banks is halted ({_halt_reason}). "
-                "Restart the process to resume."
+                f"Banks is halted ({reason}). Say '@banks resume' to lift it."
             )
 
 

@@ -17,6 +17,8 @@ reaction fallback (banks.reactions poller) still catches approvals later.
 
 from __future__ import annotations
 
+import re
+
 from .approval import ButtonAction, apply_action
 from .attack_queue import (
     QUEUE_ACTION_DONE,
@@ -34,7 +36,37 @@ from .revisions import (
     set_pending_revision,
 )
 
+# Cancelling an active Revise. This was an exact-match set, so "forget it",
+# "scratch that", even "Cancel." with a full stop were fed to apply_revision as
+# the *edit instruction* — Banks would try to rewrite the draft to say "forget
+# it" (found 2026-09-02). Matched as a regex over the whole message now:
+# punctuation-tolerant, and covers the natural ways someone backs out.
 _CANCEL_WORDS = {"cancel", "nevermind", "never mind", "stop revising"}
+
+_CANCEL_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:nah|no|nope|actually|umm?|ok|okay)?[\s,]*"
+    r"(?:cancel|never\s?mind|forget\s+it|forget\s+that|scratch\s+that|"
+    r"skip\s+(?:it|that|this)(?:\s+one)?|leave\s+it(?:\s+as\s+is)?|"
+    r"don'?t\s+bother|no\s+need|stop\s+revising|stop\s+it|undo|abort|"
+    r"as\s+you\s+were|belay\s+that)"
+    r"|(?:actually\s+)?(?:no|nope|nah)"   # bare negation, anchored: "actually no",
+    r")[\s.!,]*$",                          # but NOT "no more than 3 sentences"
+    re.IGNORECASE,
+)
+
+
+def is_cancel_revision(text: str) -> bool:
+    """True if this message backs out of an active Revise rather than instructing it.
+
+    Bias: when unsure, treat it as an INSTRUCTION, not a cancel. Wrongly
+    cancelling loses Josh's typed edit; wrongly revising is visible and
+    re-doable, and the redraft is never sent without another approval.
+    """
+    t = (text or "").strip()
+    if t.lower() in _CANCEL_WORDS:
+        return True
+    return bool(_CANCEL_RE.match(t))
 
 
 def _debug_log(msg: str) -> None:
@@ -46,13 +78,19 @@ def _debug_log(msg: str) -> None:
 
 
 def is_authorized(cfg: BanksConfig, user_id: str) -> bool:
-    """Single-approver lock (Q13): only Josh's id may drive actions.
+    """Approver lock (Q13): only a configured approver may drive actions.
 
-    Approve triggers a real Relay send — that authority is Josh's alone. A None
-    approver_user_id means "allow anyone" (test workspaces where Lesly is the
-    only member).
+    BANKS_APPROVER_USER_ID takes a comma-separated list, so Josh and whoever
+    operates Banks alongside him can both act. Approve triggers a real Relay
+    send, so every id here is a genuine authority grant — keep the list short.
+
+    An empty/unset value means "allow anyone" (test workspaces with one member);
+    `run()` refuses to start live in that state.
     """
-    return cfg.approver_user_id is None or user_id == cfg.approver_user_id
+    approvers = cfg.approver_ids
+    if not approvers:
+        return True
+    return user_id in approvers
 
 
 def classify_incoming(text: str, has_pending_revision: bool) -> str:
@@ -88,7 +126,7 @@ def _handle_action(cfg: BanksConfig, web, payload: dict, llm=None, chat=None) ->
     # Single-approver lock: ignore clicks from anyone but Josh (Q13).
     if not is_authorized(cfg, user_id):
         print(f"[listener] IGNORED click action={action_id!r} from user={user_id!r} "
-              f"(approver={cfg.approver_user_id!r}) — not the approver", flush=True)
+              f"(approvers={cfg.approver_ids!r}) — not an approver", flush=True)
         return
     print(f"[listener] click action={action_id!r} draft_ref={draft_ref!r} "
           f"by user={user_id!r}", flush=True)
@@ -127,11 +165,94 @@ def _handle_action(cfg: BanksConfig, web, payload: dict, llm=None, chat=None) ->
     print(f"[listener] {button.value} applied draft_ref={draft_ref!r} "
           f"enqueue_send={getattr(result, 'enqueue_send', None)}", flush=True)
 
+    # Acknowledge the click BEFORE any slow/fallible follow-on work. Surround
+    # generation calls the LLM and Slack; if it raised (anything but ValueError
+    # escaped the helper), the card was never updated, Josh saw his tap do
+    # nothing, and tapped Approve again — a double approval on a real send.
+    if channel and ts:
+        _update_card(web, channel, ts, result.status_text, draft_ref, user_id)
+
     if button is ButtonAction.APPROVE:
         _maybe_generate_surround_pack(cfg, draft_ref, chat, llm)
 
-    if channel and ts:
-        _update_card(web, channel, ts, result.status_text, draft_ref, user_id)
+
+# ---------------------------------------------------------------------------
+# Freezing a company — the only mutation an @banks message can perform
+# ---------------------------------------------------------------------------
+
+def _apply_freeze(cfg: BanksConfig, cmd, user_id: str) -> str:
+    """Validate, then either freeze or ask first.
+
+    Two real failures this closes (both seen live 2026-09-02):
+      - "replied Evolve stop chasing them" wrote a freeze for the company
+        "evolve stop chasing them" and reported "🧊 Froze Evolve". A freeze row
+        existed; the actual company kept its cadence.
+      - Soft phrasings ("put a pin in Acme") matched nothing, fell through to the
+        read-only QA layer, and Josh got a conversational reply while follow-ups
+        continued.
+
+    So: never freeze a company Banks doesn't track, and never freeze on an
+    inferred intent without a yes.
+    """
+    from .commands import handle_command, is_pronoun_reference
+    from .confirm import (confirmation_prompt, resolve_known_company,
+                          set_pending_confirmation, unknown_company_reply)
+
+    # "ok stop chasing them" matches the regex with company="them". The pronoun
+    # has no antecedent here (mentions are routed per-message), so ask rather
+    # than reporting "I don't track them" — or worse, freezing something.
+    if is_pronoun_reference(cmd.company):
+        return ("Which company should I stop chasing? "
+                "Name it and I'll freeze the follow-ups there.")
+
+    slug, suggestions = resolve_known_company(cfg.db_path, cmd.company)
+    if slug is None:
+        return unknown_company_reply(cmd.company, suggestions)
+
+    if cmd.source == "llm":
+        # Inferred from paraphrase — propose, don't write.
+        set_pending_confirmation(cfg.db_path, user_id, cmd.intent, slug, cmd.raw)
+        return confirmation_prompt(cmd.intent, slug)
+
+    return handle_command(cfg.db_path, type(cmd)(cmd.intent, slug, raw=cmd.raw,
+                                                 source=cmd.source))
+
+
+def _resolve_pending_confirmation(cfg: BanksConfig, web, text: str, user_id: str,
+                                  channel: str | None, thread_ts: str | None) -> bool:
+    """Handle a yes/no answering an outstanding freeze proposal.
+
+    Returns True if this message was consumed. An unrecognised reply is NOT
+    consent: the proposal is dropped and the message continues to normal
+    routing, so Josh is never frozen by ambiguity.
+    """
+    from .commands import Command, handle_command
+    from .confirm import (clear_pending_confirmation, get_pending_confirmation,
+                          read_confirmation)
+
+    pending = get_pending_confirmation(cfg.db_path, user_id)
+    if not pending:
+        return False
+
+    verdict = read_confirmation(text)
+    if verdict is None:
+        clear_pending_confirmation(cfg.db_path, user_id)
+        return False           # not an answer — treat as a new message
+
+    clear_pending_confirmation(cfg.db_path, user_id)
+    if verdict is False:
+        reply = f"Understood — leaving *{pending['company']}* running."
+    else:
+        reply = handle_command(cfg.db_path, Command(
+            pending["intent"], pending["company"], raw=pending["raw"]))
+    # Mutations must leave an audit line — a freeze applied with no log entry is
+    # invisible in the journal (gap found in live testing 2026-09-02).
+    print(f"[listener] confirmation {'accepted' if verdict else 'declined'} "
+          f"intent={pending['intent']!r} company={pending['company']!r} "
+          f"by user={user_id!r}", flush=True)
+    if reply and channel:
+        web.chat_postMessage(channel=channel, thread_ts=thread_ts, text=reply)
+    return True
 
 
 def _maybe_generate_surround_pack(cfg: BanksConfig, draft_ref: str, chat, llm) -> None:
@@ -165,8 +286,20 @@ def _maybe_generate_surround_pack(cfg: BanksConfig, draft_ref: str, chat, llm) -
 
     try:
         generate_surround_pack(cfg.db_path, opp["id"], load_career_facts(), chat, llm)
-    except ValueError as exc:  # empty career-facts, missing opportunity — surface, don't crash
+    except Exception as exc:
+        # Catch everything, not just ValueError: an LLM timeout or Slack error
+        # must not escape into the click handler. And TELL Josh — a silent
+        # failure means he approves a Tier A and simply never gets the pack.
         print(f"[listener] surround pack error: {exc!r}", flush=True)
+        if chat is not None:
+            reason = ("your career facts are empty — add them to "
+                      "career-facts.md and I can draft the pack"
+                      if isinstance(exc, ValueError) and "career" in str(exc).lower()
+                      else f"{type(exc).__name__}: {exc}")
+            try:
+                chat.post(f"⚠️ Approved, but I couldn't build the surround pack — {reason}")
+            except Exception:
+                pass  # never let the notification itself break the click
 
 
 def _handle_queue_action(cfg: BanksConfig, action_id: str, draft_ref: str) -> str:
@@ -229,7 +362,7 @@ def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
             return
         if not is_authorized(cfg, user_id):
             print(f"[listener] IGNORED resume from user={user_id!r} "
-                  f"(approver={cfg.approver_user_id!r})", flush=True)
+                  f"(approvers={cfg.approver_ids!r})", flush=True)
             return
         clear_halt()
         _debug_log(f"msg from {user_id!r}: {text!r} -> RESUME (halt cleared)")
@@ -251,7 +384,7 @@ def _handle_message(cfg: BanksConfig, web, llm, chat, event: dict) -> None:
     verdict = classify_incoming(text, pending is not None)
 
     if verdict == "revise":
-        if text.strip().lower() in _CANCEL_WORDS:
+        if is_cancel_revision(text):
             clear_pending_revision(cfg.db_path, user_id)
             if channel:
                 web.chat_postMessage(channel=channel, text="✍️ Revision cancelled.")
@@ -328,24 +461,68 @@ def should_ingest_mention_file(cfg: BanksConfig, event: dict) -> bool:
     return True
 
 
+_CSV_CLASSIFY_SYSTEM = (
+    "You classify CSV exports for a job-search tool. "
+    "Given the filename and first few rows of a CSV, respond with JSON: "
+    '{"type": "<type>"} where <type> is one of: '
+    '"simplify" (job applications from Simplify), '
+    '"linkedin" (LinkedIn connections export), '
+    '"recruiter" (recruiter registry with Title/Vertical Fit columns), '
+    '"alumni" (alumni/former-colleague list), '
+    '"unknown" (none of the above). '
+    "Use only the column names and sample values to decide — no guessing."
+)
+
+
+def _classify_csv(path: str, filename: str) -> str:
+    """Ask Haiku what kind of CSV this is. Returns one of: simplify/linkedin/recruiter/alumni/unknown."""
+    import csv
+
+    # Read up to 3 data rows (skip blank/preamble lines)
+    rows: list[str] = []
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as fh:
+            for line in fh:
+                stripped = line.strip()
+                if stripped:
+                    rows.append(stripped)
+                if len(rows) >= 4:  # header + 3 data rows
+                    break
+    except Exception:
+        return "unknown"
+
+    sample = "\n".join(rows)
+    user_prompt = f"Filename: {filename}\n\nFirst rows:\n{sample}"
+
+    try:
+        from .llmport import load_llm_port
+        llm = load_llm_port()
+        result = llm.extract_json(_CSV_CLASSIFY_SYSTEM, user_prompt,
+                                  schema_hint='{"type": "string"}')
+        return result.get("type", "unknown")
+    except Exception:
+        return "unknown"
+
+
 def _handle_file(cfg: BanksConfig, web, chat, event: dict) -> None:
-    """Download a dropped Simplify CSV and run intake; post a terse receipt."""
+    """Download a dropped CSV, classify it with Haiku, route to the right ingest."""
     import os
     import tempfile
 
-    from .csvport import LiveCSVPort
-    from .intake import ingest_simplify
+    from .csvport import (LiveCSVPort, parse_linkedin_connection_row,
+                          parse_recruiter_row, parse_alumni_row)
+    from .intake import ingest_simplify, ingest_contacts
     from .slackfiles import download
 
     channel = event.get("channel")
     files = event.get("files") or []
-    # A file from Josh in the jobs channel that ISN'T a CSV → tell him.
+    # Non-CSV drop in the jobs channel → tell the user.
     if (not event.get("bot_id")
             and is_authorized(cfg, event.get("user", ""))
             and channel == cfg.slack_jobs_channel_id
             and files and not any(_is_csv(f) for f in files)):
         web.chat_postMessage(channel=channel,
-                             text="📎 That's not a CSV — drop a Simplify export (.csv).")
+                             text="📎 That's not a CSV — drop a Simplify, LinkedIn connections, recruiter, or alumni export.")
         return
 
     if not should_ingest_file(cfg, event):
@@ -364,11 +541,60 @@ def _handle_file(cfg: BanksConfig, web, chat, event: dict) -> None:
             tmp = os.path.join(tempfile.mkdtemp(), name)
             with open(tmp, "wb") as fh:
                 fh.write(data)
+
+            csv_type = _classify_csv(tmp, name)
+
+            if csv_type == "linkedin":
+                inserted, merged = ingest_contacts(
+                    cfg.db_path, LiveCSVPort(), tmp,
+                    parse_linkedin_connection_row,
+                    skip_until_header="First Name",
+                )
+                web.chat_postMessage(
+                    channel=channel,
+                    text=(f"👥 Imported LinkedIn connections *{name}* — "
+                          f"{inserted} new contacts, {merged} merged."),
+                )
+                continue
+
+            if csv_type == "recruiter":
+                inserted, merged = ingest_contacts(
+                    cfg.db_path, LiveCSVPort(), tmp,
+                    parse_recruiter_row,
+                )
+                web.chat_postMessage(
+                    channel=channel,
+                    text=(f"👥 Imported recruiter list *{name}* — "
+                          f"{inserted} new, {merged} merged."),
+                )
+                continue
+
+            if csv_type == "alumni":
+                inserted, merged = ingest_contacts(
+                    cfg.db_path, LiveCSVPort(), tmp,
+                    parse_alumni_row,
+                )
+                web.chat_postMessage(
+                    channel=channel,
+                    text=(f"👥 Imported alumni list *{name}* — "
+                          f"{inserted} new, {merged} merged."),
+                )
+                continue
+
+            if csv_type == "unknown":
+                web.chat_postMessage(
+                    channel=channel,
+                    text=(f"⚠️ Couldn't identify *{name}* — drop a Simplify, "
+                          f"LinkedIn connections, recruiter, or alumni CSV."),
+                )
+                continue
+
+            # simplify (default)
             res = ingest_simplify(cfg.db_path, LiveCSVPort(), tmp, chat)
-        except Exception as exc:  # parse/download failure → clear message, no crash
+        except Exception as exc:
             web.chat_postMessage(
                 channel=channel,
-                text=f"⚠️ Couldn't import *{name}* — is this a Simplify export? ({exc})",
+                text=f"⚠️ Couldn't import *{name}* — {exc}",
             )
             continue
         total = res.ingested + res.duplicates + res.excluded
@@ -532,18 +758,24 @@ def _handle_app_mention(cfg: BanksConfig, web, llm, chat, event: dict,
 
     if not is_authorized(cfg, user_id):
         print(f"[listener] mention ignored — user {user_id!r} not authorized "
-              f"(approver={cfg.approver_user_id!r})", flush=True)
+              f"(approvers={cfg.approver_ids!r})", flush=True)
         return
     print(f"[listener] @mention from {user_id!r}: {stripped!r}", flush=True)
 
-    # 4. Deterministic CONTROL commands (mutations) — checked BEFORE the LLM.
-    # These freeze a company / stop follow-ups, so they must never be LLM-executed
-    # (the QA layer is read-only). Only mutating intents are handled here; read
-    # intents fall through to the QA layer's tool-calling.
+    # 3b. An outstanding "did you mean to freeze X?" — this message may be the
+    # yes/no. Checked before routing so "yes" isn't read as a fresh question.
+    if _resolve_pending_confirmation(cfg, web, stripped, user_id, channel, thread_ts):
+        return
+
+    # 4. CONTROL commands (mutations). A freeze stops every follow-up at a
+    # company, so it goes through _apply_freeze: the company must be one Banks
+    # actually tracks, and an LLM-inferred intent is confirmed before it fires.
+    # Read intents fall through to the QA layer's tool-calling.
     cmd = route(cfg.db_path, stripped, llm)
     if cmd.intent in ("stop_company", "replied"):
-        reply = handle_command(cfg.db_path, cmd)
-        print(f"[listener] control cmd intent={cmd.intent!r} -> {reply!r}", flush=True)
+        reply = _apply_freeze(cfg, cmd, user_id)
+        print(f"[listener] control cmd intent={cmd.intent!r} source={cmd.source!r} "
+              f"-> {reply!r}", flush=True)
         if reply and channel:
             web.chat_postMessage(channel=channel, thread_ts=thread_ts, text=reply)
         return
@@ -600,8 +832,16 @@ def run(cfg: BanksConfig | None = None) -> None:
     cfg = cfg or load_config()
     if not (cfg.slack_bot_token and cfg.slack_app_token):
         raise SystemExit("Need BANKS_SLACK_BOT_TOKEN and BANKS_SLACK_APP_TOKEN.")
+    # The kill switch lives in the DB so it reaches the scheduler process (which
+    # owns relay_dispatch). This listener does not go through Container.live(),
+    # so it must point halt at the DB itself — without this, "@banks stop all"
+    # would set a flag only this process can see and nothing would stop sending.
+    from .halt import init_halt
+    from .store import init_db
+    init_db(cfg.db_path)
+    init_halt(cfg.db_path)
     import os as _os
-    if not cfg.approver_user_id and not _os.environ.get("BANKS_SKIP_APPROVER_CHECK"):
+    if not cfg.approver_ids and not _os.environ.get("BANKS_SKIP_APPROVER_CHECK"):
         # Fail closed: an unset approver id makes is_authorized() allow anyone
         # (the test-workspace default). A live listener must never inherit that.
         raise SystemExit("Need BANKS_APPROVER_USER_ID set before running live — "

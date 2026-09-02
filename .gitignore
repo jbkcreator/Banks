@@ -8,3 +8,11 @@ outbox/*.json
 *.egg-info/
 outbox/
 .secrets/
+
+# DB backups — *.db does NOT match these (they end .db.bak-<timestamp>), and
+# they hold Josh's real pipeline + 1,694 real contacts. Never commit.
+*.db.bak-*
+*.bak-*
+# Real client exports (LinkedIn connections, Simplify, recruiter registries):
+# real names and email addresses. Test fixtures live in test_data/ instead.
+data/

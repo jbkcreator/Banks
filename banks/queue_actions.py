@@ -21,6 +21,7 @@ from .governance import mark_lane_sent, queue_cadence, record_funnel_event
 from .packets import mark_answered, mark_completed
 from .refs import DraftRef
 from .relay import suppress_intent
+from .clock import local_date_plus
 from .store import cursor, transaction
 
 
@@ -30,7 +31,9 @@ def _now_iso() -> str:
 
 def snooze_item(db_path: str, draft_ref: DraftRef | str, days: int = 1) -> None:
     """Hold until `days` from today (default next morning). Re-enters carried-over."""
-    until = (date.today() + timedelta(days=days)).isoformat()
+    # Josh's calendar, not the server's: at 9pm ET the UTC date is already
+    # tomorrow, so date.today()+1 silently snoozed for two days.
+    until = local_date_plus(days)
     _ensure_row(db_path, draft_ref)
     with cursor(db_path) as cur:
         cur.execute(
@@ -52,14 +55,23 @@ def skip_item(db_path: str, draft_ref: DraftRef | str) -> None:
 def mark_done(db_path: str, draft_ref: DraftRef | str) -> None:
     """Josh did a manual action (LinkedIn DM / call / text). MARK_SENT semantics.
 
-    Marks the packet answered+completed, suppresses the send intent (Relay must
-    never fire on a manual action), stamps the lane sent_at + starts its cadence,
-    and logs touch_log + a 'contacted' funnel event so spacing/funnel are honest.
+    ONE transaction, deliberately. This used to be six separate writes, and a
+    crash between them could leave the send intent un-suppressed while the
+    packet read as answered — Relay would then email a contact Josh had already
+    messaged himself. That double-contact is precisely what the collision ledger
+    exists to prevent, so the suppression and the state change commit together
+    or not at all (fixed 2026-09-02).
+
+    Writes: packet answered+completed, intent suppressed, lane sent_at + status,
+    Day 3/7/14 cadence, 'contacted' funnel event, touch_log, queue_items='done'.
     """
+    from .cadence import FOLLOW_UP_DAYS
+
     ref = DraftRef.parse(draft_ref)
     now = _now_iso()
+    _ensure_row(db_path, ref)
 
-    with cursor(db_path) as cur:
+    with transaction(db_path) as cur:
         lane = cur.execute(
             "SELECT id, opportunity_id FROM outreach_lanes WHERE draft_ref = ?",
             (str(ref),),
@@ -68,20 +80,34 @@ def mark_done(db_path: str, draft_ref: DraftRef | str) -> None:
             "SELECT to_addr FROM send_intents WHERE draft_ref = ?", (str(ref),)
         ).fetchone()
 
-    mark_answered(db_path, ref.packet_id)
-    mark_completed(db_path, ref.packet_id)
-    suppress_intent(db_path, ref)
+        # Suppress FIRST: if anything below fails the whole transaction rolls
+        # back, so Relay can never inherit a half-applied manual send.
+        cur.execute(
+            "UPDATE send_intents SET status = 'suppressed' "
+            "WHERE draft_ref = ? AND status NOT IN ('sent', 'suppressed')",
+            (str(ref),),
+        )
+        cur.execute("UPDATE decision_packets SET answered_at = ?, completed_at = ? "
+                    "WHERE id = ?", (now, now, ref.packet_id))
 
-    if lane:
-        mark_lane_sent(db_path, lane["id"])          # sent_at + status='sent'
-        queue_cadence(db_path, lane["id"])            # Day 3/7/14 from sent_at
-        if lane["opportunity_id"]:
-            record_funnel_event(db_path, lane["opportunity_id"], "contacted")
+        if lane:
+            cur.execute(
+                "UPDATE outreach_lanes SET sent_at = ?, status = 'sent' WHERE id = ?",
+                (now, lane["id"]),
+            )
+            base = datetime.date.fromisoformat(now[:10])
+            for i, delta in enumerate(FOLLOW_UP_DAYS, start=1):
+                cur.execute(
+                    "INSERT OR IGNORE INTO cadence_queue "
+                    "(outreach_lane_id, touch_number, due_date) VALUES (?, ?, ?)",
+                    (lane["id"], i, (base + datetime.timedelta(days=delta)).isoformat()),
+                )
+            if lane["opportunity_id"]:
+                cur.execute(
+                    "INSERT INTO funnel_events (opportunity_id, event_type, ts) "
+                    "VALUES (?, 'contacted', ?)", (lane["opportunity_id"], now),
+                )
 
-    # Atomic: touch_log + queue_items state change together — partial write would
-    # leave the card active tomorrow even though the contact was touched.
-    _ensure_row(db_path, ref)
-    with transaction(db_path) as cur:
         if si and si["to_addr"]:
             cur.execute(
                 "INSERT INTO touch_log (address, draft_ref, touched_at) VALUES (?, ?, ?)",

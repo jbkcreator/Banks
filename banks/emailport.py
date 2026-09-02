@@ -25,14 +25,19 @@ from typing import Protocol
 
 class EmailPort(Protocol):
     def get_confirmations(self) -> list[dict]: ...
+    def fetch_recent(self, days: int = 14) -> list[dict]: ...
 
 
 class FakeEmailPort:
-    def __init__(self, messages: list[dict]) -> None:
+    def __init__(self, messages: list[dict], recent: list[dict] | None = None) -> None:
         self._messages = messages
+        self._recent = recent if recent is not None else messages
 
     def get_confirmations(self) -> list[dict]:
         return self._messages
+
+    def fetch_recent(self, days: int = 14) -> list[dict]:
+        return self._recent
 
 
 class LiveImapEmailPort:
@@ -86,6 +91,51 @@ class LiveImapEmailPort:
         except (imaplib.IMAP4.error, OSError) as e:
             print(f"[intake] ERROR — IMAP auth/network failure: {e}")
         return messages
+
+
+    # ------------------------------------------------------------------
+    # Read-only inbox access (QA layer). Josh granted read access 2026-09-02.
+    # Unlike get_confirmations() this does NOT filter to confirmations — the
+    # job-search relevance filter lives in inbox.py, which needs the DB. This
+    # method only bounds the fetch by date and size. It never marks anything
+    # read, never deletes, never sends: strictly a read.
+
+    # 60 messages took ~33s over IMAP on 2026-09-02 — too long to sit behind a
+    # Slack question. 25 covers a fortnight of Josh's job mail comfortably and
+    # the 5-min cache in inbox.py absorbs repeat asks.
+    MAX_FETCH = 25          # hard ceiling on messages pulled per call
+    MAX_BODY_CHARS = 2000   # truncate bodies before they reach an LLM prompt
+
+    def fetch_recent(self, days: int = 14) -> list[dict]:
+        """Return messages from the last `days`, newest first. Read-only.
+
+        Opens the mailbox readonly and uses BODY.PEEK so the \\Seen flag is
+        never set — Josh's unread state is left exactly as it was.
+        """
+        out: list[dict] = []
+        try:
+            with imaplib.IMAP4_SSL(self.IMAP_HOST) as conn:
+                conn.login(self._email, self._password)
+                conn.select("INBOX", readonly=True)
+                since = (datetime.now(timezone.utc)
+                         - timedelta(days=days)).strftime("%d-%b-%Y")
+                _, data = conn.search(None, f'(SINCE "{since}")')
+                uids = data[0].split()[-self.MAX_FETCH:]
+                for uid in reversed(uids):
+                    _, msg_data = conn.fetch(uid, "(BODY.PEEK[])")
+                    if not msg_data or not isinstance(msg_data[0], tuple):
+                        continue
+                    msg = email.message_from_bytes(msg_data[0][1])
+                    out.append({
+                        "subject": msg.get("Subject", ""),
+                        "body": _extract_body(msg)[:self.MAX_BODY_CHARS],
+                        "from": msg.get("From", ""),
+                        "date": msg.get("Date", ""),
+                        "message_id": msg.get("Message-ID", ""),
+                    })
+        except (imaplib.IMAP4.error, OSError) as e:
+            print(f"[inbox] ERROR — IMAP read failure: {e}")
+        return out
 
 
 def _extract_body(msg: email.message.Message) -> str:

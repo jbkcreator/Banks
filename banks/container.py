@@ -59,6 +59,11 @@ class Container:
         cfg = load_config()
         resolved_db = db_path or cfg.db_path
         init_db(resolved_db)
+        # Point the kill switch at the shared DB. Both long-running services go
+        # through Container.live(), so this is what lets "@banks stop all" in
+        # the listener actually stop relay_dispatch in the scheduler.
+        from .halt import init_halt
+        init_halt(resolved_db)
 
         # MOD-06: seed the exclusion wall from its source-of-truth file at
         # startup, so the DB the gates check always reflects exclusions.txt.

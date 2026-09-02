@@ -468,3 +468,44 @@ CREATE TABLE IF NOT EXISTS pending_revisions (
     draft_ref TEXT NOT NULL,
     set_at TEXT NOT NULL
 );
+
+-- Kill switch (T3-14). Persisted in the DB, NOT a module global: the listener
+-- process receives "@banks stop all" but relay_dispatch runs in the scheduler
+-- process, so an in-memory flag halted the wrong process and outreach kept
+-- sending (found 2026-09-02). A single row, id=1, shared by both services and
+-- surviving restart — resuming is Josh saying "resume", never a deploy.
+CREATE TABLE IF NOT EXISTS halt_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    halted INTEGER NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '',
+    set_at TEXT
+);
+
+-- MOD-05 QA conversation memory. @banks questions were fully stateless, so
+-- "what's the status of Ketch" → "who do I know there" had no referent and the
+-- model either asked again or guessed a company (found 2026-09-02). Guessing is
+-- the unacceptable branch: a wrong company means a confident answer about the
+-- wrong employer. A few recent turns per user, pruned by age, are enough to
+-- resolve "there"/"them"/"the first one" — and when they still don't resolve,
+-- the QA layer asks instead of guessing.
+CREATE TABLE IF NOT EXISTS qa_turns (
+    id INTEGER PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    companies TEXT NOT NULL DEFAULT '',   -- comma-separated slugs named in the turn
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_qa_turns_user ON qa_turns (user_id, id DESC);
+
+-- MOD-05: a freeze inferred by the LLM (not matched by an exact command regex)
+-- is CONFIRMED before it fires. Freezing is a real mutation — it stops every
+-- follow-up at a company — so acting on a paraphrase Banks only 80% understood
+-- is the wrong risk. One pending slot per user, last-ask-wins, short TTL.
+CREATE TABLE IF NOT EXISTS pending_confirmations (
+    user_id TEXT PRIMARY KEY,
+    intent TEXT NOT NULL,        -- 'replied' | 'stop_company'
+    company TEXT NOT NULL,
+    raw TEXT NOT NULL DEFAULT '',
+    set_at TEXT NOT NULL
+);

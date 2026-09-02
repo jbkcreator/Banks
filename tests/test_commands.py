@@ -130,19 +130,28 @@ class TestUnrecognisedFallback:
     """An unrecognised message must NOT dump the same menu every time; it should
     answer honestly (esp. capability questions Banks can't do)."""
 
-    def test_linkedin_question_gets_honest_hardwall_reply(self, db_path):
+    def test_linkedin_question_gets_honest_reply(self, db_path):
         cmd = route(db_path, "Can you see LinkedIn?")
         assert cmd.intent == "cant_do"
         reply = handle_command(db_path, cmd)
-        assert "hard wall" in reply.lower()
+        assert "can't browse linkedin" in reply.lower()
 
     def test_linkedin_typo_still_caught(self, db_path):
         assert route(db_path, "can u see linkdin").intent == "cant_do"
 
-    def test_look_through_gmail_gets_hardwall_reply(self, db_path):
+    def test_look_through_gmail_reply_is_accurate(self, db_path):
+        """Banks DOES read job-search mail (Josh granted access 2026-09-02), so
+        the reply must not claim otherwise — while still ruling out LinkedIn."""
         reply = handle_command(db_path, route(db_path,
-            "Can you look through my slack, LinkedIn and Gmail?"))
-        assert "hard wall" in reply.lower()
+            "Can you look through my slack, LinkedIn and Gmail?")).lower()
+        assert "can't browse linkedin" in reply
+        assert "can't read your live inbox" not in reply
+        assert "job-search mail" in reply
+
+    def test_email_question_is_not_refused(self, db_path):
+        """'did anyone email me back' must fall through to the QA layer's
+        recent_email tool, not get the old blanket 'I can't' refusal."""
+        assert route(db_path, "did anyone email me back").intent != "cant_do"
 
     def test_explicit_help_shows_menu(self, db_path):
         reply = handle_command(db_path, route(db_path, "help"))

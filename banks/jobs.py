@@ -20,8 +20,11 @@ from .scorecard import render_weekly_scorecard, count_reds
 
 
 def _weekly_scorecard_blocks(db_path: str) -> list[dict]:
-    from datetime import date, timedelta
-    today = date.today()
+    from datetime import timedelta
+    from .clock import today_local
+    # Josh's date: the Friday scorecard fires at 17:00 ET, when a UTC box is
+    # already on Saturday and would report the wrong week.
+    today = today_local()
     # Most recent Friday (or today if Friday).
     days_back = (today.weekday() - 4) % 7
     week_ending = (today - timedelta(days=days_back)).isoformat()
