@@ -82,6 +82,39 @@ def freeze_company(
         )
 
 
+def unfreeze_company(db_path: str, company_normalized: str) -> bool:
+    """Manually lift a freeze. Returns True if a freeze existed and was removed.
+
+    Nothing else in Banks ever did this (found 2026-09-02): the global kill
+    switch (halt.py) and a company freeze are unrelated mechanisms — "@banks
+    resume" restarts standing jobs, it does not touch company_freeze. Once
+    frozen, a company stayed frozen forever with no command, button, or code
+    path to reverse it, so undoing a freeze meant editing the database by
+    hand. This is the counterpart to freeze_company()/record_reply(),
+    reachable the same way a freeze is: via a Slack command, approver-gated.
+
+    Also reopens any cadence_queue rows record_reply()/got_reply() froze for
+    this company's opportunities — deleting only the company_freeze row would
+    leave those touches permanently stuck in status='frozen', so the company
+    would read as unfrozen while its follow-ups still never fire.
+    """
+    with transaction(db_path) as cur:
+        n = cur.execute(
+            "DELETE FROM company_freeze WHERE company_normalized = ?",
+            (company_normalized,),
+        ).rowcount
+        cur.execute(
+            """UPDATE cadence_queue SET status = 'pending'
+               WHERE status = 'frozen' AND outreach_lane_id IN (
+                   SELECT ol.id FROM outreach_lanes ol
+                   JOIN opportunities o ON o.id = ol.opportunity_id
+                   WHERE o.company_normalized = ?
+               )""",
+            (company_normalized,),
+        )
+    return n > 0
+
+
 # ---------------------------------------------------------------------------
 # Got-reply signal (MOD-04 collision protection)
 # ---------------------------------------------------------------------------

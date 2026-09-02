@@ -91,6 +91,13 @@ CREATE TABLE IF NOT EXISTS opportunities (
     -- Role's industry/vertical (from JD extraction). Persisted so the warm-path
     -- referral engine can match a recruiter's vertical_fit to the role (P2).
     industry TEXT,
+    -- Posting location, persisted because it feeds the geo component of the fit
+    -- score (20 of 100 points). It used to be read from the Simplify export,
+    -- scored, and discarded — so any later re-score that could not re-fetch the
+    -- posting silently lost those 20 points, which is exactly the Tier B/A
+    -- boundary ('proptech' with no location = 62/B, same row remote = 82/A).
+    -- Found 2026-09-02 building the company-name industry classifier.
+    location TEXT,
     -- Back-link to the decision packet that surfaced this opportunity, so an
     -- Approve on that packet can trigger the surround pack (MOD-03).
     source_packet_id INTEGER REFERENCES decision_packets(id)
@@ -509,3 +516,4 @@ CREATE TABLE IF NOT EXISTS pending_confirmations (
     raw TEXT NOT NULL DEFAULT '',
     set_at TEXT NOT NULL
 );
+

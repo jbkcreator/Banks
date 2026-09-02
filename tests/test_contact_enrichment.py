@@ -292,3 +292,69 @@ def test_enrichment_jobs_noop_without_creds(db_path, monkeypatch):
     monkeypatch.setattr("banks.config.load_config", lambda: _cfg())
     assert jobs.run_job("enrichment_submit", db_path, FakeChatPort()) is None
     assert jobs.run_job("enrichment_retrieve", db_path, FakeChatPort()) is None
+
+
+# --- domain resolution from the posting URL (2026-09-02) --------------------
+
+class TestDomainFromPostingUrl:
+    """Slugifying the company name sent Clay at the wrong domain for a third of
+    Josh's pipeline, and at a DIFFERENT COMPANY for 'flex' — Flex Ltd (NYSE)
+    instead of the proptech startup, twice returning a confident wrong match.
+    The posting URL is the one unambiguous identifier Banks already stores.
+    """
+
+    def _d(self, url):
+        from banks.contact_enrichment import LiveClaySearchPort
+        return LiveClaySearchPort.domain_from_posting_url(url)
+
+    def test_lever_slug_beats_the_legal_name(self):
+        # 'lone wolf technologies' slugified to lonewolftechnologies.com
+        assert self._d("https://jobs.lever.co/lwolf/26597b6a/apply") == "lwolf.com"
+
+    def test_workday_subdomain(self):
+        # 'jones lang lasalle' slugified to joneslanglasalle.com
+        assert self._d("https://jll.wd1.myworkdayjobs.com/jllcareers/job/x") == "jll.com"
+
+    def test_ashby_slug_drops_the_parenthetical(self):
+        # 'maintainx (an autodesk company)' -> maintainxanautodeskcompany.com
+        assert self._d("https://jobs.ashbyhq.com/maintainx/abc/application") == "maintainx.com"
+
+    def test_employer_hosted_url_is_the_domain(self):
+        assert self._d("https://www.mews.com/en/careers/jobs/123") == "mews.com"
+
+    def test_careers_subdomain_stripped(self):
+        assert self._d("https://careers.acme.com/jobs/1") == "acme.com"
+
+    def test_icims_strips_the_careers_prefix(self):
+        assert self._d("https://careers2-vistaequitypartners.icims.com/jobs/3031/job") \
+            == "vistaequitypartners.com"
+
+    def test_eu_greenhouse_host(self):
+        assert self._d("https://job-boards.eu.greenhouse.io/unframe/jobs/1") == "unframe.com"
+
+    def test_job_boards_subdomain_is_not_treated_as_the_company(self):
+        """job-boards.greenhouse.io must fall through to the path segment."""
+        assert self._d("https://job-boards.greenhouse.io/knowbe4/jobs/1") == "knowbe4.com"
+
+    def test_missing_or_junk_url_is_empty_not_a_guess(self):
+        assert self._d(None) == ""
+        assert self._d("") == ""
+        # Junk parses to a netloc with spaces; returning it would send that
+        # straight to Clay as a company_identifier. Empty -> caller falls back.
+        assert self._d("not a url") == ""
+        assert self._d("https://localhost/jobs") == ""
+
+
+class TestNameFallbackDomain:
+    def _d(self, name):
+        from banks.contact_enrichment import LiveClaySearchPort
+        return LiveClaySearchPort._to_domain(name)
+
+    def test_parenthetical_is_dropped(self):
+        assert self._d("MaintainX (An Autodesk Company)") == "maintainx.com"
+
+    def test_descriptive_suffix_is_dropped(self):
+        assert self._d("Mews Systems") == "mews.com"
+
+    def test_plain_name_unchanged(self):
+        assert self._d("HubSpot") == "hubspot.com"

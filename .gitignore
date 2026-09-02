@@ -16,3 +16,8 @@ outbox/
 # Real client exports (LinkedIn connections, Simplify, recruiter registries):
 # real names and email addresses. Test fixtures live in test_data/ instead.
 data/
+# Enrichment working directory — request/response CSVs holding real hiring
+# managers' names, LinkedIn URLs and WORK EMAIL ADDRESSES (third-party PII,
+# not the client's own data). Also ManualCSVEnrichmentPort's default out_dir,
+# so it fills up at runtime. Never commit.
+enrichment/

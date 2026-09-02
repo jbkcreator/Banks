@@ -52,6 +52,10 @@ class EnrichmentRequest:
     company: str
     role_hint: str | None = None
     name: str | None = None          # known (warm) -> skip discovery, resolve email only
+    # Company domain resolved from the job posting URL. Set it wherever possible:
+    # slugifying the company name sent Clay at the wrong domain for a third of
+    # Josh's pipeline, and at a DIFFERENT COMPANY for 'flex' (2026-09-02).
+    domain: str | None = None
 
 
 @dataclass(frozen=True)
@@ -160,18 +164,104 @@ class LiveClaySearchPort:
             "Content-Type": "application/json",
         }
 
+    # Hosts that belong to an applicant-tracking system, not to the employer.
+    # For these the company identifier is in the path or the subdomain.
+    _ATS_HOSTS = ("greenhouse.io", "lever.co", "ashbyhq.com", "icims.com",
+                  "myworkdayjobs.com", "workable.com", "smartrecruiters.com",
+                  "jobvite.com", "breezy.hr", "bamboohr.com", "teamtailor.com",
+                  "recruitee.com", "personio.de", "pinpointhq.com")
+
+    @staticmethod
+    def domain_from_posting_url(url: str | None) -> str:
+        """Company domain from the job posting URL, or "" if it can't be read.
+
+        Far more reliable than slugifying the company name, which produced
+        garbage for anything whose legal name is not its domain (all found live
+        2026-09-02, each returning zero Clay results):
+            'lone wolf technologies'          -> lonewolftechnologies.com  (real: lwolf.com)
+            'jones lang lasalle'              -> joneslanglasalle.com      (real: jll.com)
+            'maintainx (an autodesk company)' -> maintainxanautodeskcompany.com
+            'mews systems'                    -> mewssystems.com           (real: mews.com)
+        and worse, 'flex' -> flex.com, which is a DIFFERENT company (Flex Ltd,
+        the NYSE manufacturer) whose VP Sales and CEO both came back as
+        confident-looking wrong matches.
+
+        Two cases:
+          - posting hosted on the employer's own site -> that host IS the domain
+          - posting on an ATS -> the company handle is the first path segment
+            (greenhouse/lever/ashby) or the subdomain (workday/icims)
+        """
+        import re
+        from urllib.parse import urlparse
+        if not url:
+            return ""
+        try:
+            parsed = urlparse(url if "//" in url else f"https://{url}")
+        except Exception:
+            return ""
+        host = (parsed.netloc or "").lower().split(":")[0]
+        if not host:
+            return ""
+
+        # Must actually look like a hostname — junk input ("not a url") parses
+        # into a netloc with spaces, which would then be sent to Clay verbatim
+        # as a company_identifier. Return "" so the caller falls back.
+        if not re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", host):
+            return ""
+
+        ats = next((h for h in LiveClaySearchPort._ATS_HOSTS if host.endswith(h)), None)
+        if ats is None:
+            # Employer-hosted: strip common careers subdomains, keep the rest.
+            host = re.sub(r"^(www|careers?|jobs|apply|talent)\.", "", host)
+            return host
+
+        # Workday / iCIMS put the handle in the subdomain: jll.wd1.myworkdayjobs.com,
+        # careers2-vistaequitypartners.icims.com
+        sub = host[: -len(ats)].rstrip(".")
+        if sub:
+            handle = sub.split(".")[0]
+            handle = re.sub(r"^careers?\d*-", "", handle)
+            handle = re.sub(r"[^a-z0-9-]", "", handle)
+            if handle and handle not in ("job-boards", "jobs", "boards", "www", "apply"):
+                return f"{handle}.com"
+
+        # Greenhouse / Lever / Ashby put it in the first path segment.
+        seg = next((x for x in (parsed.path or "").split("/") if x), "")
+        seg = re.sub(r"[^a-z0-9-]", "", seg.lower())
+        return f"{seg}.com" if seg else ""
+
     @staticmethod
     def _to_domain(company: str) -> str:
-        """Best-effort company name → domain. e.g. 'HubSpot' → 'hubspot.com'."""
+        """Best-effort company name → domain. e.g. 'HubSpot' → 'hubspot.com'.
+
+        Last-resort fallback only — prefer domain_from_posting_url(). Strips a
+        trailing parenthetical ("MaintainX (An Autodesk Company)") and common
+        legal/desc suffixes, which otherwise get glued into the slug.
+        """
         import re
-        slug = re.sub(r"[^a-z0-9]", "", company.lower())
-        return f"{slug}.com"
+        name = re.sub(r"\(.*?\)", " ", company or "")
+        name = re.sub(r"\b(systems|technologies|holdings|group|inc|llc|ltd|corp)\b",
+                      " ", name.lower())
+        slug = re.sub(r"[^a-z0-9]", "", name)
+        return f"{slug}.com" if slug else ""
 
     def _title_keywords(self, role_hint: str | None) -> list[str]:
-        if not role_hint:
-            return self._DEFAULT_TITLES
-        words = [w.strip() for w in role_hint.split() if len(w.strip()) > 2]
-        return words or self._DEFAULT_TITLES
+        """Always search for a decision-maker title — never Josh's own target
+        job title.
+
+        `role_hint` on an EnrichmentRequest is THE JOB JOSH APPLIED FOR (set by
+        intake._surface_opportunity and every enqueue_company caller), stored
+        for context/logging. It used to be split into literal search keywords
+        here, which searched for people whose TITLE CONTAINED WORDS FROM JOSH'S
+        OWN JOB TITLE — e.g. "Sales Account Executive" became keywords
+        ["Sales","Account","Executive"], and Clay dutifully returned other
+        Account Executives at the company: peers, not the requisition owner
+        this port exists to find (found live 2026-09-02 — Backflip and Beyond
+        Pricing both came back with an "Account Executive", not a VP/CRO).
+        Decision-maker titles are the only correct search target regardless of
+        what role Josh is applying for.
+        """
+        return self._DEFAULT_TITLES
 
     def submit(self, requests: list[EnrichmentRequest]) -> str:
         mapping: dict[str, str] = {}
@@ -179,7 +269,7 @@ class LiveClaySearchPort:
             payload = {
                 "source_type": "people",
                 "filters": {
-                    "company_identifier": [self._to_domain(req.company)],
+                    "company_identifier": [req.domain or self._to_domain(req.company)],
                     "job_title_keywords": self._title_keywords(req.role_hint),
                 },
             }
@@ -349,13 +439,20 @@ def submit_pending(db_path: str, port: EnrichmentPort) -> str | None:
     """Drain pending queue rows into one batch. Returns batch_id, or None if empty."""
     with cursor(db_path) as cur:
         rows = [dict(r) for r in cur.execute(
-            "SELECT id, company_normalized, role_hint FROM enrichment_queue "
-            "WHERE status = 'pending'"
+            "SELECT q.id, q.company_normalized, q.role_hint, "
+            "  (SELECT o.source_url FROM opportunities o "
+            "   WHERE o.company_normalized = q.company_normalized "
+            "     AND o.source_url IS NOT NULL LIMIT 1) AS posting_url "
+            "FROM enrichment_queue q WHERE q.status = 'pending'"
         ).fetchall()]
     if not rows:
         return None
     ids = [r["id"] for r in rows]
-    reqs = [EnrichmentRequest(company=r["company_normalized"], role_hint=r["role_hint"])
+    reqs = [EnrichmentRequest(
+                company=r["company_normalized"], role_hint=r["role_hint"],
+                # Read the domain off the real posting URL rather than
+                # slugifying the company name — see domain_from_posting_url().
+                domain=LiveClaySearchPort.domain_from_posting_url(r.get("posting_url")) or None)
             for r in rows]
     batch_id = port.submit(reqs)
     # Mark ONLY the rows we actually submitted. A cold opportunity queued while

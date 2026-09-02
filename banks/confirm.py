@@ -111,12 +111,17 @@ def read_confirmation(text: str) -> bool | None:
 
 
 def confirmation_prompt(intent: str, company: str) -> str:
-    what = ("you heard back from" if intent == "replied" else "you want to stop chasing")
+    if intent == "replied":
+        what, effect = "you heard back from", "freezes"
+    elif intent == "unfreeze_company":
+        what, effect = "you want to resume chasing", "un-freezes and resumes"
+    else:
+        what, effect = "you want to stop chasing", "freezes"
     # The tag is not optional: untagged messages are ignored by design, so
     # "Reply yes" alone got a bare "yes" dropped in live testing (2026-09-02)
     # while Josh believed he had confirmed the freeze.
     return (f"Just to confirm — {what} *{company}*? "
-            f"That freezes every follow-up there.\n"
+            f"That {effect} every follow-up there.\n"
             f"Reply `@banks yes` to confirm, or `@banks no` to leave it running.")
 
 

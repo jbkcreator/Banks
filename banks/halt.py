@@ -162,9 +162,22 @@ def is_halt_command(text: str) -> bool:
 
 
 def is_unhalt_command(text: str) -> bool:
-    """True if the message asks to resume after a halt. Approver-gated by the
-    caller — re-enabling sends must not be open to anyone."""
+    """True if the message is a GLOBAL resume (typo/phrasing tolerant).
+
+    Same discipline as is_halt_command: global only when an unhalt token is
+    followed by nothing but global filler. "resume Acme" / "resume chasing
+    Acme" / "restart chasing Acme" name ONE company and must NOT lift the
+    global halt — before this fix `any(x in _UNHALT_TOKENS for x in words)`
+    matched on "resume" appearing ANYWHERE in the message, so those phrasings
+    were swallowed here before commands.py's unfreeze_company regex ever saw
+    them (found 2026-09-02, adding the unfreeze command exposed it).
+    """
     t = (text or "").strip().lower().rstrip("!. ")
     if t in _UNHALT_PHRASES:
         return True
-    return any(x in _UNHALT_TOKENS for x in _words(t))
+    w = _words(t)
+    idx = next((i for i, x in enumerate(w) if x in _UNHALT_TOKENS), None)
+    if idx is None:
+        return False
+    after = w[idx + 1:]
+    return all(x in _GLOBAL_FILLER for x in after)

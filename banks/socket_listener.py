@@ -772,7 +772,7 @@ def _handle_app_mention(cfg: BanksConfig, web, llm, chat, event: dict,
     # actually tracks, and an LLM-inferred intent is confirmed before it fires.
     # Read intents fall through to the QA layer's tool-calling.
     cmd = route(cfg.db_path, stripped, llm)
-    if cmd.intent in ("stop_company", "replied"):
+    if cmd.intent in ("stop_company", "replied", "unfreeze_company"):
         reply = _apply_freeze(cfg, cmd, user_id)
         print(f"[listener] control cmd intent={cmd.intent!r} source={cmd.source!r} "
               f"-> {reply!r}", flush=True)

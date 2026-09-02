@@ -122,6 +122,9 @@ def ingest_simplify(
             tier=tier, pursuit_mode=pursuit_mode,
             company_normalized=normalise_company(company), source_url=source_url,
             needs_enrichment=needs_enrichment,
+            # Persist location: it feeds 20 points of geo score, and without it
+            # a later re-score (industry enrichment) silently loses them.
+            location=parsed.get("location") or None,
             status=simplify_status,
         )
         ingested += 1

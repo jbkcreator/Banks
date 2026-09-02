@@ -27,8 +27,8 @@ from .warmpath import describe_contact, find_referral_paths
 _ROUTER_SYSTEM = (
     "You classify a Slack message into one job-search intent, or none. "
     "Return JSON only: "
-    '{"intent": "whoat|status|calllist|pipeline|cant_do|stop_company|replied|none", '
-    '"company": "<name or null>"}. '
+    '{"intent": "whoat|status|calllist|pipeline|cant_do|stop_company|replied|'
+    'unfreeze_company|none", "company": "<name or null>"}. '
     "whoat = who does the user know at a company; status = pipeline status of ONE "
     "company; calllist = who to reach out to today; pipeline = an overall snapshot "
     "of where they stand across all applications ('where am I', 'how's my search'); "
@@ -39,17 +39,20 @@ _ROUTER_SYSTEM = (
     "in Acme', 'drop them', 'Acme ghosted me, forget it'); "
     "replied = the user is telling you a company or its recruiter GOT BACK TO THEM / "
     "answered / responded, however narratively phrased ('the Acme recruiter finally "
-    "replied', 'heard from Acme at last'). "
-    "For stop_company and replied you MUST return the company name; if the message only "
-    "says 'them'/'they'/'it' with no company named, return intent none. "
-    "Otherwise none. No other intents exist."
+    "replied', 'heard from Acme at last'); "
+    "unfreeze_company = the user wants to RESUME/UN-FREEZE/re-start chasing a company "
+    "that was previously stopped, however phrased ('actually keep going with Acme', "
+    "'resume Acme', 'I take that back on Acme, follow up again', 'unfreeze Acme'). "
+    "For stop_company, replied, and unfreeze_company you MUST return the company name; "
+    "if the message only says 'them'/'they'/'it' with no company named, return intent "
+    "none. Otherwise none. No other intents exist."
 )
 # Read-only intents the LLM may resolve straight to an answer.
 _LLM_INTENTS = ("whoat", "status", "calllist", "pipeline", "cant_do")
 # Mutating intents the LLM may only PROPOSE — see Command.source and the
-# confirm-before-freeze path in socket_listener._handle_app_mention. A freeze has
-# no un-freeze command, so an LLM guess must never write one unattended.
-_LLM_MUTATION_INTENTS = ("stop_company", "replied")
+# confirm-before-freeze path in socket_listener._handle_app_mention. An LLM
+# guess must never write a freeze/unfreeze unattended.
+_LLM_MUTATION_INTENTS = ("stop_company", "replied", "unfreeze_company")
 
 _MENU = (
     "• `@banks where am I` — a snapshot of your whole pipeline\n"
@@ -57,6 +60,7 @@ _MENU = (
     "• `@banks who do I know at Acme` — warm intros there\n"
     "• `@banks call list` — who to reach out to today\n"
     "• `@banks replied Acme` — stop all follow-ups there\n"
+    "• `@banks resume chasing Acme` — undo a freeze, restart follow-ups\n"
     "• `@banks anything come in?` — job-search email from the last 14 days"
 )
 _HELP = "Here's what I can pull up for you:\n" + _MENU
@@ -147,6 +151,16 @@ def route(db_path: str, text: str, llm=None) -> Command:
     if m:
         return Command("stop_company", _clean_company(m.group(1)))
 
+    # Unfreeze — the mirror of stop/replied. No un-freeze command existed at all
+    # until 2026-09-02: "@banks resume" restarts standing jobs but never touched
+    # company_freeze, so a company frozen by mistake or reconsidered stayed
+    # frozen forever with no way back short of editing the database.
+    m = re.search(r"(?:resume|unfreeze|un-freeze|start)\s+(?:chasing\s+|"
+                  r"following up (?:with|on)\s+|contacting\s+|pursuing\s+)?(.+)",
+                  low)
+    if m:
+        return Command("unfreeze_company", _clean_company(m.group(1)))
+
     m = re.search(r"\bstatus\s+(?:of\s+|on\s+)?(.+)", low)
     if m:
         return Command("status", _clean_company(m.group(1)))
@@ -203,6 +217,9 @@ def handle_command(db_path: str, cmd: Command) -> str:
 
     if cmd.intent == "stop_company":
         return _apply_freeze(db_path, cmd, "stop_company")
+
+    if cmd.intent == "unfreeze_company":
+        return _apply_unfreeze(db_path, cmd)
 
     if cmd.intent == "pipeline":
         return _pipeline_summary(db_path)
@@ -270,6 +287,41 @@ def _apply_freeze(db_path: str, cmd: Command, kind: str) -> str:
                 f"({opps}). Everything else is still running.")
     return (f"🧊 Froze *{match.slug}* — reply logged. All pending follow-ups there "
             f"stopped ({opps}). No one who replied will be chased.")
+
+
+def _apply_unfreeze(db_path: str, cmd: Command) -> str:
+    """Counterpart to _apply_freeze — resume follow-ups at a frozen company.
+
+    Until 2026-09-02 this had NO command at all: "@banks resume" only lifts the
+    global kill switch (halt.py), it never touched company_freeze, so a company
+    frozen by mistake or reconsidered stayed frozen forever with no way back
+    short of editing the database by hand — which is what actually happened
+    live (hari froze Evolve, said "resume", and it stayed frozen).
+
+    Same gates as _apply_freeze: a company must be named and must resolve
+    exactly (typo-tolerant via resolve_company); an LLM-inferred phrasing is
+    confirmed via socket_listener's pending-confirmation flow before this is
+    ever called with cmd.source == "llm" in production — this branch stays
+    only so handle_command() behaves consistently if called directly.
+    """
+    from .governance import unfreeze_company
+    template = "@banks resume chasing {c}"
+    if not cmd.company:
+        return f"Which company? Try `{template.format(c='Acme')}`."
+
+    match = resolve_company(db_path, cmd.company)
+    if not match.exact:
+        return _did_you_mean(match, cmd.company, template)
+
+    if cmd.source == "llm":
+        return (f"Just to confirm — want me to resume chasing *{match.slug}*? "
+                f"Send `{template.format(c=match.slug)}` and it's done. "
+                f"_(Nothing has changed yet.)_")
+
+    if unfreeze_company(db_path, match.slug):
+        return (f"▶️ Resumed *{match.slug}* — follow-ups there are back on. "
+                f"Any cadence touches that were frozen are re-queued.")
+    return f"*{match.slug}* wasn't frozen — nothing to resume."
 
 
 def _resolve_for_read(db_path: str, typed: str, template: str):
